@@ -1,7 +1,12 @@
 name: Deploy
 
 # Triggered manually (or on push to main once human provides OCI details).
-# Requires repo secrets: SSH_HOST, SSH_USER, SSH_KEY (H-2/H-3).
+# Secrets consumed (see SPEC §11.4):
+#   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_PRIVATE_KEY — SSH into VM
+#   ARC_MAINNET_RPC_URL — Alchemy mainnet RPC (written into VM .env)
+#   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB — DB credentials
+#   API_KEY_HASH — write-scope API key hash
+#   vars.ARC_SENTINEL_DOMAIN — public domain for Caddy TLS
 on:
   workflow_dispatch:
   push:
@@ -11,27 +16,43 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    if: vars.ARC_SENTINEL_DOMAIN != '' && secrets.SSH_HOST != ''
+    if: vars.ARC_SENTINEL_DOMAIN != '' && secrets.DEPLOY_HOST != ''
     steps:
       - uses: actions/checkout@v4
 
       - name: Install SSH key
         run: |
           mkdir -p ~/.ssh
-          printf '%s' "${{ secrets.SSH_KEY }}" > ~/.ssh/deploy_key
+          printf '%s' "${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
 
-      - name: Pull and restart on VM
+      - name: Render production .env and restart stack on VM
         env:
-          HOST: ${{ secrets.SSH_HOST }}
-          USER: ${{ secrets.SSH_USER }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          RPC_URL: ${{ secrets.ARC_MAINNET_RPC_URL }}
+          CHAIN_ID: "5042"
+          PG_USER: ${{ secrets.POSTGRES_USER }}
+          PG_PASS: ${{ secrets.POSTGRES_PASSWORD }}
+          PG_DB: ${{ secrets.POSTGRES_DB }}
+          API_KEY_HASH: ${{ secrets.API_KEY_HASH }}
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${USER}@${HOST} '
             set -e
             cd ~/arc-sentinel
             git pull --ff-only
-            docker compose pull api indexer
-            docker compose up -d --no-deps api indexer
+            # CI/CD is the source of truth for production secrets (SPEC §11.4):
+            cat > .env <<EOF
+            DATABASE_URL=postgresql+psycopg://'$PG_USER':'$PG_PASS'@localhost:5432/'$PG_DB'
+            RPC_URL='$RPC_URL'
+            CHAIN_ID='$CHAIN_ID'
+            POSTGRES_USER='$PG_USER'
+            POSTGRES_PASSWORD='$PG_PASS'
+            POSTGRES_DB='$PG_DB'
+            API_KEY_HASH='$API_KEY_HASH'
+            EOF
+            docker compose pull
+            docker compose up -d
           '
 
       - name: Smoke check

@@ -392,6 +392,32 @@ SSH 私鑰、DB 密碼、RPC API Key 一律放 GitHub Actions Secrets，絕不�
 6. `docker compose up -d`，確認 `curl https://<domain>/health` 正常。
 7. 把 SSH 金鑰、VM IP／域名補進 GitHub Actions Secrets，之後每次 push main 就自動部署。
 
+### 11.4 憑證與機密管理（Credentials & Secrets Map）
+
+> 原則：**GitHub Secrets 是敏感值的「源頭」**（只在 CI/CD 執行期間存在，部署時寫進 VM）；
+> **`.env` 是服務實際讀取的檔案**，分兩個副本：本機開發（假值）與 OCI VM 生產（真值）。
+> VM 的 `.env` 由 `deploy.yml` 自動覆寫，避免「本機改了、GitHub 沒改」失蹤。**所有 `.env` 一律進 `.gitignore`，永不進版控。**
+
+| 變數 | 是什麼 | 敏感？ | 取得方式 | 存放位置 |
+|---|---|---|---|---|
+| `ARC_MAINNET_RPC_URL` | Alchemy 主網 RPC（`https://arc-mainnet.g.alchemy.com/v2/<KEY>`） | 🔴 | Alchemy Dashboard（Network: Arc Mainnet 5042） | GitHub Secrets → 部署時寫進 VM `.env` |
+| `ARC_TESTNET_RPC_URL` | 同帳號另建 Testnet App（`…/v2/<KEY>`） | 🔴 | Alchemy Dashboard（Network: Arc Testnet 5042002） | GitHub Secrets（CI 整合測試用） |
+| `CHAIN_ID` | `5042`（主網）/ `5042002`（testnet） | 🟢 純設定 | 直接填 | code 預設 / docker-compose，不必當 Secret |
+| `POSTGRES_USER/PASSWORD/DB` | Postgres 帳密 | 🔴 密碼 | 自己產隨機密碼（`openssl rand -base64 24`） | 本機/CI 用假值；真值在 GitHub Secrets → VM `.env` |
+| `DATABASE_URL` | 連線字串（組上面三個） | 🔴 | 組合產生 | 同上 |
+| `API_KEY_HASH`（目前實作） | 服務 write-scope API Key 的 sha256 hash | 🔴 | `printf '%s' "$KEY" | sha256sum`，明文 key 只給自己 | 密碼管理器；VM `.env` 只放 hash |
+| `SENTINEL_API_KEY_SALT`（未來） | 多把 key 時的雜湊鹽（`openssl rand -hex 32`） | 🔴 | 自產一次 | GitHub Secrets → VM `.env`（追加 API Key 表時使用） |
+| `DEPLOY_SSH_PRIVATE_KEY` | GitHub Actions SSH 進 VM 的私鑰 | 🟥 非常敏感 | 自產 SSH key pair；公鑰放 VM、私鑰給 GitHub | **只放 GitHub Secrets，VM 絕不放私鑰** |
+| `DEPLOY_HOST` / `DEPLOY_USER` | VM IP／網域、SSH 使用者 | 🟡 | OCI Console | GitHub Secrets（或 Actions Variables） |
+| `DUCKDNS_TOKEN` | DuckDNS 動態更新 IP（若用 DuckDNS） | 🔴 | duckdns.org 帳號頁 | **只放 VM** cron 用，不經 GitHub |
+| OCI Object Storage 金鑰 | `rclone`/`oci-cli` 備份用 | 🔴 | OCI Console → Identity → Customer Secret Keys | **只放 VM** 備份腳本，不進 GitHub |
+| `CIRCLE_API_KEY` | 若整合 Circle 唯讀查詢（§16-4） | 🔴 | Circle Developer Console | GitHub Secrets → VM（依決策才需申請） |
+| `GITHUB_TOKEN` | 推 GHCR 用 | — | 內建 | 自動，不需申請 |
+
+> ⚠️ **2026-09-16 已驗證**：Arc 主網已上線（chain 5042）。`.env` 主網優先：
+> `RPC_URL=https://arc-mainnet.g.alchemy.com/v2/<KEY>` + `CHAIN_ID=5042`。
+> 本機開發/CI 保留 testnet（免費水龍頭、不碰真錢）。
+
 ---
 
 ## 12. 監控、備份與成本控管
@@ -477,7 +503,7 @@ SSH 私鑰、DB 密碼、RPC API Key 一律放 GitHub Actions Secrets，絕不�
 
 ## 16. 開放待決事項（需要使用者本人決定，Agent 不應自行假設）
 
-1. RPC provider 選哪家（Alchemy／QuickNode／dRPC／Blockdaemon）＋申請帳號本身。
+1. ~~RPC provider 選哪家~~ **（已收斂）**：採 Alchemy，主網 app 格式 `https://arc-mainnet.g.alchemy.com/v2/<KEY>`；同帳號另開 testnet app 供 CI。Key 由使用者自行填入 `.env`，不外洩。
 2. 部署用的網域名稱（買一個網域，或先用 DuckDNS/nip.io 起步）。
 3. Phase 7 用哪一個人類擁有的錢包送測試轉帳、金額多少。
 4. 是否要在 MVP 就整合 Circle CLI 的唯讀查詢（`circle wallet list` / `circle balance`）來補齊「政策設定」這一層資訊，或先只靠鏈上資料推斷；這會影響 Phase 4 的 API 欄位是否需要多打一次 Circle API。
