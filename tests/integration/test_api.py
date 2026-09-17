@@ -19,10 +19,11 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.deps import _hash_api_key
 from app.config import Settings
-from app.db.models import Agent, Transaction
+from app.db.models import Agent, ApiKey, Transaction
 from app.main import app
 
 API_KEY = "test-write-key-123456"
+SALT = "test-salt-for-api-keys"
 RPC_URL = "https://rpc.testnet.invalid"
 
 
@@ -56,6 +57,69 @@ async def test_write_route_requires_api_key(client: httpx.AsyncClient):
         headers={"X-API-Key": "wrong"},
     )
     assert resp2.status_code in (401, 403, 503)
+
+
+async def test_db_backed_api_key_auth(
+    client: httpx.AsyncClient, migrated_db: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+):
+    """Phase 4 / SPEC §17: SENTINEL_API_KEY_SALT + api_keys table auth path."""
+    from app.db import session as db_session
+
+    db_key = "db-backed-key-987654"
+    test_settings = Settings(api_key_salt=SALT)
+    for mod in ("app.config", "app.main", "app.api.deps", "app.api.routes_transactions"):
+        monkeypatch.setattr(f"{mod}.get_settings", lambda: test_settings)
+    monkeypatch.setattr(db_session, "settings", test_settings)
+
+    # seed the API key (sha256(salt + key)) exactly like scripts/gen_api_key.py
+    with migrated_db() as session:
+        session.add(ApiKey(key_hash=_hash_api_key(db_key, SALT), label="test-key"))
+        session.commit()
+
+    # without / with wrong key → not authorized
+    resp = await client.post(
+        "/api/v1/agents", json={"name": "x", "wallet_address": "0x" + "1" * 40}
+    )
+    assert resp.status_code in (401, 403)
+    resp = await client.post(
+        "/api/v1/agents",
+        json={"name": "x", "wallet_address": "0x" + "1" * 40},
+        headers={"X-API-Key": "wrong"},
+    )
+    assert resp.status_code == 403
+
+    # with the seeded key → works
+    resp = await client.post(
+        "/api/v1/agents",
+        json={"name": "db-auth", "wallet_address": "0x" + "6" * 40},
+        headers={"X-API-Key": db_key},
+    )
+    assert resp.status_code == 201
+
+
+async def test_db_backed_key_auth_ignores_wrong_salt(
+    client: httpx.AsyncClient, migrated_db: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+):
+    """A key hashed with a different salt must NOT authenticate."""
+    from app.db import session as db_session
+
+    db_key = "db-backed-key-999999"
+    test_settings = Settings(api_key_salt="different-salt")
+    for mod in ("app.config", "app.main", "app.api.deps", "app.api.routes_transactions"):
+        monkeypatch.setattr(f"{mod}.get_settings", lambda: test_settings)
+    monkeypatch.setattr(db_session, "settings", test_settings)
+
+    # seed with the ORIGINAL salt — but deps is configured with a different salt
+    with migrated_db() as session:
+        session.add(ApiKey(key_hash=_hash_api_key(db_key, SALT), label="test-key"))
+        session.commit()
+
+    resp = await client.post(
+        "/api/v1/agents",
+        json={"name": "x", "wallet_address": "0x" + "7" * 40},
+        headers={"X-API-Key": db_key},
+    )
+    assert resp.status_code == 403
 
 
 async def test_create_agent_and_list(client: httpx.AsyncClient):

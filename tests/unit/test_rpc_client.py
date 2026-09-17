@@ -237,3 +237,115 @@ async def test_eth_get_logs_passes_addresses_and_topics(url: str):
         assert "0xddf252ad" in captured["json"]
     finally:
         await c.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.5 — dRPC fallback
+# ---------------------------------------------------------------------------
+@respx.mock
+async def test_failover_to_fallback_after_primary_threshold(url: str):
+    fallback = "https://rpc.drpc.mainnet.arc.io"
+    respx.post(url).mock(return_value=httpx.Response(503, text="down"))
+    respx.post(fallback).mock(
+        return_value=httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "0x64"})
+    )
+    c = RpcClient(
+        url=url,
+        fallback_url=fallback,
+        max_retries=5,
+        backoff_base_seconds=0.001,
+        backoff_max_seconds=0.01,
+        max_consecutive_failures=2,
+    )
+    try:
+        assert await c.eth_block_number() == 100
+        assert c.using_fallback is True
+        assert c.active_url == fallback
+        assert c.consecutive_failures == 0  # fallback success resets the counter
+        assert respx.calls.call_count >= 3  # 2 primary fails + 1 fallback success
+    finally:
+        await c.close()
+
+
+@respx.mock
+async def test_fallback_also_down_raises_provider_down(url: str):
+    fallback = "https://rpc.drpc.mainnet.arc.io"
+    respx.post(url).mock(return_value=httpx.Response(503, text="primary down"))
+    respx.post(fallback).mock(return_value=httpx.Response(502, text="fallback down"))
+    c = RpcClient(
+        url=url,
+        fallback_url=fallback,
+        max_retries=5,
+        backoff_base_seconds=0.001,
+        backoff_max_seconds=0.01,
+        max_consecutive_failures=2,
+    )
+    try:
+        with pytest.raises(RpcProviderDown):
+            await c.eth_block_number()
+    finally:
+        await c.close()
+
+
+@respx.mock
+async def test_probe_primary_and_switch_back_after_recovery(url: str):
+    fallback = "https://rpc.drpc.mainnet.arc.io"
+    # Primary: 2 failures (drives failover) then recovers (probe + real call).
+    primary_seq = [
+        httpx.Response(503, text="down"),
+        httpx.Response(503, text="down"),
+        httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "0x12c"}),  # probe
+        httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "0x12c"}),
+    ]
+    respx.post(url).mock(side_effect=primary_seq)
+    respx.post(fallback).mock(
+        return_value=httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "0x12c"})
+    )
+    c = RpcClient(
+        url=url,
+        fallback_url=fallback,
+        max_retries=5,
+        backoff_base_seconds=0.001,
+        backoff_max_seconds=0.01,
+        max_consecutive_failures=2,
+        probe_after_successes=1,
+    )
+    try:
+        assert await c.eth_block_number() == 300
+        assert c.using_fallback is True  # failover happened, fallback served it
+
+        # Second call probes the (now recovered) primary and switches back.
+        assert await c.eth_block_number() == 300
+        assert c.using_fallback is False
+        assert c.active_url == url
+    finally:
+        await c.close()
+
+
+@respx.mock
+async def test_probe_primary_failure_stays_on_fallback(url: str):
+    fallback = "https://rpc.drpc.mainnet.arc.io"
+    # Primary stays down forever (probe will keep failing).
+    respx.post(url).mock(return_value=httpx.Response(503, text="still down"))
+    respx.post(fallback).mock(
+        return_value=httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "0x1f4"})
+    )
+    c = RpcClient(
+        url=url,
+        fallback_url=fallback,
+        max_retries=5,
+        backoff_base_seconds=0.001,
+        backoff_max_seconds=0.01,
+        max_consecutive_failures=2,
+        probe_after_successes=1,
+    )
+    try:
+        assert await c.eth_block_number() == 500
+        assert c.using_fallback is True
+
+        # Probe fires but primary is still down → stay on fallback, call succeeds.
+        assert await c.eth_block_number() == 500
+        assert c.using_fallback is True
+        assert c.active_url == fallback
+    finally:
+        await c.close()

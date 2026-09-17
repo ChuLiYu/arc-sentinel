@@ -1,4 +1,4 @@
-"""JSON-RPC client for the Arc RPC endpoint (SPEC §2 / §4 / §13).
+"""JSON-RPC client for the Arc RPC endpoint (SPEC §2 / §4 / §13 / Phase 2.5).
 
 Wraps ``httpx.AsyncClient`` with the three calls the Indexer Worker needs:
 
@@ -6,7 +6,7 @@ Wraps ``httpx.AsyncClient`` with the three calls the Indexer Worker needs:
 * ``eth_getBlockByNumber``       — one block, full transactions
 * ``eth_getLogs``                — filtered by address + Transfer topic + range
 
-Hard requirements implemented here (SPEC §13):
+Hard requirements implemented here (SPEC §13 + Phase 2.5):
 
 * **Exponential backoff retries** — delays follow ``base → base*2 → base*4 → …``
   capped at ``backoff_max_seconds`` (1s → 2s → 4s → … → 30s by default).
@@ -14,6 +14,12 @@ Hard requirements implemented here (SPEC §13):
 * **Consecutive-failure counter** — persists across calls and raises
   :class:`RpcProviderDown` once the threshold is crossed so the worker can fire
   the internal ``internal_rpc_down`` alert instead of silently hanging.
+* **dRPC fallback (Phase 2.5)** — when the primary URL fails
+  ``max_consecutive_failures`` times in a row the client automatically fails
+  over to ``fallback_url``. After the fallback has served
+  ``probe_after_successes`` successful calls it probes the primary again and
+  switches back as soon as it recovers. If the fallback also fails the client
+  raises :class:`RpcProviderDown` exactly as before (single-provider behaviour).
 * **Recognizable errors** — a small exception hierarchy so callers can classify
   transport / HTTP / JSON-RPC failures precisely.
 """
@@ -34,6 +40,7 @@ DEFAULT_MAX_RETRIES = 5
 DEFAULT_BACKOFF_BASE = 1.0
 DEFAULT_BACKOFF_MAX = 30.0
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 5
+DEFAULT_PROBE_AFTER_SUCCESSES = 5
 
 # JSON-RPC error codes that indicate a provider-side hiccup worth retrying
 # (generic server error range -32000..-32099 plus "internal error" -32603).
@@ -97,22 +104,33 @@ class RpcClient:
         self,
         *,
         url: str,
+        fallback_url: str | None = None,
         timeout: float | httpx.Timeout = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base_seconds: float = DEFAULT_BACKOFF_BASE,
         backoff_max_seconds: float = DEFAULT_BACKOFF_MAX,
         max_consecutive_failures: int = DEFAULT_MAX_CONSECUTIVE_FAILURES,
+        probe_after_successes: int = DEFAULT_PROBE_AFTER_SUCCESSES,
         sleep: Callable[[float], Awaitable[None]] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._url = url
+        self._fallback_url = fallback_url or None
         self._max_retries = max_retries
         self._backoff_base = backoff_base_seconds
         self._backoff_max = backoff_max_seconds
         self.max_consecutive_failures = max_consecutive_failures
+        self._probe_after_successes = max(1, probe_after_successes)
         self._sleep = sleep or asyncio.sleep
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._request_id = 0
+
+        #: True while the primary URL is the active provider.
+        self._active_is_primary = True
+        #: Consecutive successful calls served by the fallback (drives probing).
+        self._fallback_success_streak = 0
+        #: Set once the fallback is healthy long enough to probe the primary.
+        self._pending_primary_probe = False
 
         #: Public counter of consecutive failed *calls* (reset on success).
         self.consecutive_failures = 0
@@ -122,12 +140,26 @@ class RpcClient:
         """Build a client from :class:`app.config.Settings`."""
         return cls(
             url=settings.rpc_url,
+            fallback_url=settings.rpc_fallback_url or None,
             timeout=settings.rpc_timeout_seconds,
             max_retries=settings.rpc_max_retries,
             backoff_base_seconds=settings.rpc_backoff_base_seconds,
             backoff_max_seconds=settings.rpc_backoff_max_seconds,
             max_consecutive_failures=settings.rpc_max_consecutive_failures,
         )
+
+    # ------------------------------------------------------------------
+    # Provider selection (Phase 2.5 — dRPC fallback)
+    # ------------------------------------------------------------------
+    @property
+    def active_url(self) -> str:
+        """The URL the next request will hit (primary or fallback)."""
+        return self._url if self._active_is_primary else (self._fallback_url or self._url)
+
+    @property
+    def using_fallback(self) -> bool:
+        """True once the client failed over to the backup provider."""
+        return not self._active_is_primary
 
     # ------------------------------------------------------------------
     # Backoff schedule (kept as a property so tests can assert the policy)
@@ -232,23 +264,42 @@ class RpcClient:
     async def _call(self, method: str, params: list[Any]) -> Any:
         attempt = 0
         while True:
+            # When the fallback has been healthy, probe the primary on the
+            # next call so we automatically switch back once it recovers.
+            if self.using_fallback and self._pending_primary_probe:
+                await self._probe_primary()
+
             error = await self._attempt(method, params)
             if error is None:
+                self._record_success()
                 return self._last_result  # type: ignore[attr-defined]
             if not _is_retryable(error):
                 raise error
 
             self.consecutive_failures += 1
             if self.consecutive_failures >= self.max_consecutive_failures:
+                # Phase 2.5: fail over to the fallback provider, or declare down.
+                if self.using_fallback or not self._fallback_url:
+                    logger.error(
+                        "RPC consecutive failures=%d >= %d — provider(s) down",
+                        self.consecutive_failures,
+                        self.max_consecutive_failures,
+                    )
+                    raise RpcProviderDown(
+                        f"{method}: {self.consecutive_failures} consecutive failures "
+                        f"(>= {self.max_consecutive_failures})"
+                    ) from error
+
                 logger.error(
-                    "RPC consecutive failures=%d >= %d — provider considered down",
+                    "RPC primary failed %d times — failing over to fallback %s",
                     self.consecutive_failures,
-                    self.max_consecutive_failures,
+                    self._fallback_url,
                 )
-                raise RpcProviderDown(
-                    f"{method}: {self.consecutive_failures} consecutive failures "
-                    f"(>= {self.max_consecutive_failures})"
-                ) from error
+                self._active_is_primary = False
+                self._fallback_success_streak = 0
+                self.consecutive_failures = 0
+                attempt = 0  # start a fresh retry budget on the fallback
+                continue
 
             if attempt >= self._max_retries:
                 raise error
@@ -267,10 +318,37 @@ class RpcClient:
 
     _last_result: Any
 
-    async def _attempt(self, method: str, params: list[Any]) -> RpcError | None:
-        """Run one HTTP round-trip; return an error or None on success."""
+    def _record_success(self) -> None:
+        """Reset failure counters and schedule a primary probe when needed."""
+        self.consecutive_failures = 0
+        if self.using_fallback:
+            self._fallback_success_streak += 1
+            if self._fallback_success_streak >= self._probe_after_successes:
+                self._pending_primary_probe = True
+                self._fallback_success_streak = 0
+
+    async def _probe_primary(self) -> None:
+        """Try one lightweight call on the primary; switch back on success."""
+        self._pending_primary_probe = False
+        if self._active_is_primary or not self._fallback_url:
+            return
         try:
-            response = await self._client.post(self._url, json=self._payload(method, params))
+            response = await self._client.post(
+                self._url, json=self._payload("eth_blockNumber", [])
+            )
+            if response.status_code == 200 and "error" not in response.json():
+                logger.info("RPC primary recovered — switching back to %s", self._url)
+                self._active_is_primary = True
+                self._fallback_success_streak = 0
+        except (httpx.HTTPError, ValueError):
+            logger.debug("RPC primary probe failed; staying on fallback")
+
+    async def _attempt(self, method: str, params: list[Any]) -> RpcError | None:
+        """Run one HTTP round-trip against the active provider; error or None."""
+        try:
+            response = await self._client.post(
+                self.active_url, json=self._payload(method, params)
+            )
         except httpx.TimeoutException as exc:
             return RpcTimeoutError(f"{method} timed out: {exc}")
         except httpx.HTTPError as exc:

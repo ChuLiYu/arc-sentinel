@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,20 +10,43 @@ class Settings(BaseSettings):
     """Runtime configuration for Arc Sentinel.
 
     Values may be provided via environment variables or a local ``.env`` file
-    (see ``.env.example``). Never commit real secrets.
+    (see ``.env.example``). Variable names follow SPEC §17 credentials map:
+
+    * ``ARC_MAINNET_RPC_URL``            — primary RPC (Alchemy mainnet)
+    * ``ARC_MAINNET_RPC_FALLBACK_URL``   — dRPC mainnet fallback
+    * ``ARC_TESTNET_RPC_URL``            — CI / integration tests
+    * ``SENTINEL_API_KEY_SALT``          — hash salt for self-issued API keys
+
+    The legacy ``RPC_URL`` / ``API_KEY_SALT`` names are still accepted so an
+    existing ``.env`` keeps working. Never commit real secrets.
     """
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,  # accept both the field name and the env alias
     )
 
     # --- Database -------------------------------------------------------
     database_url: str = "postgresql+psycopg://arc_sentinel:arc_sentinel@localhost:5432/arc_sentinel"
 
     # --- Indexer (defaults point at Arc Testnet, chain 5042002) ---------
-    rpc_url: str = "https://rpc.testnet.arc.io"
+    # SPEC §17: primary RPC is Alchemy mainnet in production.
+    rpc_url: str = Field(
+        default="https://rpc.testnet.arc.io",
+        validation_alias=AliasChoices("ARC_MAINNET_RPC_URL", "RPC_URL"),
+    )
+    # SPEC §17 / Phase 2.5: dRPC fallback, empty => no automatic failover.
+    rpc_fallback_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("ARC_MAINNET_RPC_FALLBACK_URL", "RPC_FALLBACK_URL"),
+    )
+    # SPEC §17: testnet URL used only by CI integration tests.
+    testnet_rpc_url: str = Field(
+        default="https://rpc.testnet.arc.io",
+        validation_alias=AliasChoices("ARC_TESTNET_RPC_URL", "TESTNET_RPC_URL"),
+    )
     chain_id: int = 5042002
     poll_interval_seconds: float = 3.0
     confirmations: int = 2  # only index up to head - N blocks
@@ -37,6 +61,12 @@ class Settings(BaseSettings):
     usdc_address: str = "0x3600000000000000000000000000000000000000"
 
     # --- API ------------------------------------------------------------
+    # SPEC §17: self-issued API keys are stored hashed in `api_keys` table
+    # using this salt. Legacy API_KEY_HASH env remains for the preset key.
+    api_key_salt: str = Field(
+        default="",
+        validation_alias=AliasChoices("SENTINEL_API_KEY_SALT", "API_KEY_SALT"),
+    )
     api_key_hash: str = ""  # sha256 hex of the write-scope X-API-Key (empty => disabled)
 
 
