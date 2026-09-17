@@ -5,19 +5,21 @@ from __future__ import annotations
 import csv
 import io
 import uuid
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api import routes_agents, routes_alerts, routes_stats, routes_transactions
 from app.api.deps import require_api_key
 from app.config import get_settings
-from app.db.models import Agent, Alert, IndexerState, Transaction
+from app.db.models import Agent, Alert, DailyAgentSummary, IndexerState, Transaction
 from app.db.session import get_session
 from app.indexer.rpc_client import RpcClient, RpcError
 
@@ -72,9 +74,7 @@ async def health(session: Session = Depends(get_session)) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 @api.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, session: Session = Depends(get_session)) -> HTMLResponse:
-    agents = list(
-        session.scalars(select(Agent).order_by(Agent.created_at.desc())).all()
-    )
+    agents = list(session.scalars(select(Agent).order_by(Agent.created_at.desc())).all())
     open_alerts = list(
         session.scalars(
             select(Alert)
@@ -83,6 +83,32 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
             .limit(20)
         ).all()
     )
+
+    # Last-7-days outbound USDC series for the dashboard line chart.
+    # Aggregated from daily_agent_summary (a handful of rows/day).
+    today = datetime.now(UTC).date()
+    start = today - timedelta(days=6)
+    rows = session.execute(
+        select(
+            DailyAgentSummary.day,
+            func.sum(DailyAgentSummary.outbound_usdc).label("outbound_usdc"),
+        )
+        .where(DailyAgentSummary.day >= start)
+        .group_by(DailyAgentSummary.day)
+        .order_by(DailyAgentSummary.day)
+    ).all()
+    by_day = {r.day: Decimal(r.outbound_usdc or 0) for r in rows}
+    outbound_series = [
+        {
+            "day": d.isoformat(),
+            "outbound_usdc": float(by_day.get(d, Decimal("0"))),
+        }
+        for d in (start + timedelta(days=i) for i in range(7))
+    ]
+    total_outbound_7d = sum(
+        Decimal(point["outbound_usdc"]).quantize(Decimal("0.01")) for point in outbound_series
+    )
+
     return templates.TemplateResponse(
         request=request,
         name="dashboard.html",
@@ -90,6 +116,8 @@ def dashboard(request: Request, session: Session = Depends(get_session)) -> HTML
             "agents": agents,
             "open_alerts": open_alerts,
             "chain_id": get_settings().chain_id,
+            "outbound_series": outbound_series,
+            "total_outbound_7d": total_outbound_7d,
         },
     )
 

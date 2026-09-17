@@ -8,7 +8,7 @@ escalates to ``critical``.
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 
 from app.rules.common import USDC_QUANTUM, AlertDraft
@@ -22,6 +22,7 @@ CRITICAL_MULTIPLIER = Decimal("1.20")  # > 120% ⇒ critical
 def check_budget(
     *,
     agent_id: uuid.UUID,
+    agent_name: str,
     period: Period,
     limit_usdc: Decimal,
     outbound_usdc: Decimal,
@@ -31,6 +32,7 @@ def check_budget(
     Returns a single alert (the most severe applicable), or ``[]`` when the
     agent stayed within budget. Amounts are rounded to 6 dp (ROUND_DOWN) so a
     raw wei fraction can never push a value past a boundary by rounding.
+    ``agent_name`` is formatted into a human-readable message (SPEC §18).
     """
     if period not in VALID_PERIODS:
         raise ValueError(f"period must be one of {sorted(VALID_PERIODS)}, got {period!r}")
@@ -41,17 +43,21 @@ def check_budget(
     if outbound <= limit:
         return []
 
+    period_label = {"daily": "today", "weekly": "this week", "monthly": "this month"}[period]
+
     if outbound > (limit * CRITICAL_MULTIPLIER).quantize(USDC_QUANTUM):
         severity: Literal["critical", "warning"] = "critical"
         message = (
-            f"budget exceeded critically: {outbound} USDC outbound in {period} "
-            f"> 120% of limit {limit} USDC"
+            f"Agent {agent_name} spent ${outbound:,.2f} {period_label}, "
+            f"which is {_percent(outbound, limit)}% of the {period} budget of "
+            f"${limit:,.2f} — this critically exceeds the 120% threshold."
         )
     else:
         severity = "warning"
         message = (
-            f"budget exceeded: {outbound} USDC outbound in {period} "
-            f"> limit {limit} USDC"
+            f"Agent {agent_name} spent ${outbound:,.2f} {period_label}, "
+            f"which is {_percent(outbound, limit)}% of the {period} budget of "
+            f"${limit:,.2f}."
         )
 
     return [
@@ -62,3 +68,15 @@ def check_budget(
             message=message,
         )
     ]
+
+
+def _percent(outbound: Decimal, limit: Decimal) -> Decimal:
+    """Format ``outbound`` as a percentage of ``limit`` (ROUND_HALF_UP, 1 dp).
+
+    Safe against a zero limit: 0/0 → 0%, and any positive spend against a zero
+    limit returns an arbitrarily large figure (callers never hit this because
+    ``outbound <= limit`` short-circuits a zero limit, but keep it total-safe).
+    """
+    if limit == 0:
+        return Decimal("0.0")
+    return (outbound * Decimal("100") / limit).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)

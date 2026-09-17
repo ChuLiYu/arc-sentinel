@@ -195,7 +195,43 @@ async def test_health_reports_lag(client: httpx.AsyncClient, monkeypatch: pytest
     assert body["rpc_ok"] is True
 
 
-async def test_dashboard_renders(client: httpx.AsyncClient):
+async def test_dashboard_renders(
+    client: httpx.AsyncClient, migrated_db: sessionmaker[Session]
+):
+    """Dashboard HTML renders KPI cards + 7-day line chart (SPEC §8, dashboard-viz decision)."""
+    import uuid
+    from datetime import date, timedelta
+
+    from app.db.models import DailyAgentSummary
+
+    agent_id = uuid.uuid4()
+    with migrated_db() as session:
+        session.add(
+            Agent(id=agent_id, name="test-agent", wallet_address="0x" + "11" * 20)
+        )
+        session.add(
+            DailyAgentSummary(
+                agent_id=agent_id, day=date.today(), outbound_usdc=Decimal("12.40")
+            )
+        )
+        session.add(
+            DailyAgentSummary(
+                agent_id=agent_id,
+                day=date.today() - timedelta(days=1),
+                outbound_usdc=Decimal("8.00"),
+            )
+        )
+        session.commit()
+
     resp = await client.get("/api/v1/dashboard")
     assert resp.status_code == 200
     assert "Arc Sentinel" in resp.text
+    # KPI cards
+    assert "Tracked agents" in resp.text
+    assert "Open alerts" in resp.text
+    assert "USDC out (7d)" in resp.text
+    assert "$20.40" in resp.text  # 12.40 + 8.00
+    # line chart section rendered
+    assert "USDC outbound" in resp.text
+    assert "line chart" in resp.text
+    assert "<svg" in resp.text

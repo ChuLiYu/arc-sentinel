@@ -21,6 +21,7 @@ def _norm(address: str) -> str:
 def check_unknown_recipient(
     *,
     agent_id: uuid.UUID,
+    agent_name: str,
     tx_hash: str,
     to_address: str | None,
     allow_list: Iterable[str] | None,
@@ -42,7 +43,10 @@ def check_unknown_recipient(
                 agent_id=agent_id,
                 alert_type="unknown_recipient",
                 severity="warning",
-                message=f"tx {tx_hash} sent to address not on allow list: {display}",
+                message=(
+                    f"Agent {agent_name} paid an address not on the allow list: "
+                    f"{display} (tx {tx_hash})"
+                ),
                 tx_hash=tx_hash,
             )
         ]
@@ -52,6 +56,7 @@ def check_unknown_recipient(
 def check_blocked_recipient(
     *,
     agent_id: uuid.UUID,
+    agent_name: str,
     tx_hash: str,
     to_address: str | None,
     block_list: Iterable[str] | None,
@@ -71,7 +76,10 @@ def check_blocked_recipient(
                 agent_id=agent_id,
                 alert_type="blocked_recipient",
                 severity="critical",
-                message=f"tx {tx_hash} sent to blocked address: {to_address}",
+                message=(
+                    f"Agent {agent_name} paid a blocked address: {to_address} "
+                    f"(tx {tx_hash})"
+                ),
                 tx_hash=tx_hash,
             )
         ]

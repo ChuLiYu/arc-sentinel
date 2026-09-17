@@ -45,6 +45,38 @@
         <h2>Open alerts</h2>
         <div style="font-size:2rem; font-weight:700">{{ open_alerts|length }}</div>
       </div>
+      <div class="card">
+        <h2>USDC out (7d)</h2>
+        <div style="font-size:2rem; font-weight:700">${{ "%.2f"|format(total_outbound_7d) }}</div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-bottom:1.5rem">
+      <h2>USDC outbound &mdash; last 7 days</h2>
+      {% set pts = outbound_series %}
+      {% if pts and pts | map(attribute='outbound_usdc') | max > 0 %}
+        {% set maxv = pts | map(attribute='outbound_usdc') | max %}
+        {% set minv = 0 %}
+        {% set W = 640 %}{% set H = 180 %}{% set PAD = 12 %}
+        {% set stepx = (W - 2 * PAD) / (pts | length - 1 if pts | length > 1 else 1) %}
+        <svg viewBox="0 0 {{ W }} {{ H }}" role="img" aria-label="7-day USDC outbound line chart"
+             style="width:100%; height:auto; background:var(--card); border-radius:.5rem;">
+          {% for p in pts %}
+            {% set i = loop.index0 %}
+            {% set x = PAD + i * stepx %}
+            {% set y = H - PAD - (p.outbound_usdc / maxv) * (H - 2 * PAD) %}
+            {% if loop.first %}
+              <polyline fill="none" stroke="var(--accent)" stroke-width="2"
+                        points="{% for p2 in pts %}{{ PAD + (loop.index0) * stepx }},{{ H - PAD - (p2.outbound_usdc / maxv) * (H - 2 * PAD) }} {% endfor %}"/>
+            {% endif %}
+            <circle cx="{{ x }}" cy="{{ y }}" r="3" fill="var(--accent)"/>
+            <text x="{{ x }}" y="{{ H - 2 }}" text-anchor="middle" font-size="10" fill="var(--muted)">{{ p.day[5:] }}</text>
+          {% endfor %}
+        </svg>
+        <p class="muted" style="margin:.5rem 0 0">Max ${{ "%.2f"|format(maxv) }} &middot; values are summed across all tracked agents.</p>
+      {% else %}
+        <p class="empty">No outbound USDC recorded in the last 7 days yet.</p>
+      {% endif %}
     </section>
 
     <section class="card" style="margin-bottom:1.5rem">

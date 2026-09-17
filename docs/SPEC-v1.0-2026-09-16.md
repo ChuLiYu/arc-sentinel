@@ -518,10 +518,32 @@ SSH 私鑰、DB 密碼、RPC API Key 一律放 GitHub Actions Secrets，絕不�
 
 ---
 
-## 18. 參考來源（查證於 2026-09-16）
+## 18. 補助評分角度的差異化強化（2026-09-16，依官方原文更新）
+
+**這次是官方原文，不是推估。** 使用者直接取得了 Arc Microgrants 在 DoraHacks 上的完整頁面內容，「What we look for」原文是：
+
+> Relevance to Arc, technical credibility, the quality of what you built, and whether the project is worth taking further. Promise counts for more than traction here.
+
+四個維度：**跟 Arc 的相關性、技術可信度、做出來的東西本身的品質、專案值不值得繼續投資（潛力比現有牽引力更重要）**。以下調整對照這四個維度，並取代先前用 DoraHacks 通用框架反推的猜測（先前猜的「Profile Completion」等維度不是官方標準，已移除）：
+
+1. **Relevance to Arc**：`alerts.message` 用人類可讀敘述（例如「Agent X 今天花了 $12.40，是每日 $10 預算的 124%」），並在 README 開頭第一段就直接回答官方要求的那句話——「這個專案做什麼、用 Arc 的什麼特性」（USDC 原生 gas、Agent Stack 錢包、sub-second finality），不要讓評審自己去猜。
+2. **Technical credibility**：正確處理 USDC 的 18/6 位小數陷阱、CI 綠燈徽章、單元＋整合測試、resumable indexer——這些原本就在規劃裡，現在有了官方原文對應，優先順序不變。
+3. **Quality of what you built**：必須是「已部署且真的在 Arc 主網上運作」，這點官方原文明講排除 testnet-only build，跟本規劃「一律以主網為終點」的方向完全一致，不需調整。
+4. **Worth taking further / Promise > Traction**：README 的 Roadmap 段落（Circle CLI 唯讀整合、政策漂移偵測等尚未做的功能）要寫得有說服力，讓評審看到這是一個可以長出去的基礎設施，不是一次性的展示腳本。
+
+**其他官方原文帶出的確認事項：**
+- 明確排除 testnet-only build、design mockup、slide deck、已被 Circle/Arc 其他計畫資助過的專案。
+- 可以化名／匿名提交，只有入選後才需要驗證身份，僅用於撥款。
+- 公開建造者檔案不限 GitHub，X 或 Farcaster 帳號也算數。
+- 撥款是付到「一個能在 Arc 上收 USDC 的錢包」，跟 Phase 7 用的測試錢包性質相同，屆時可以直接用同一個。
+- 揭露聲明證實 Arc 是「permissioned validator set」運作——確認先前釐清的：受管控的是誰能出塊驗證，不是誰能讀 RPC。
+- 提交表單要準備「一段話說明做了什麼、用 Arc 做什麼」，建議草稿：*"Arc Sentinel is an open-source, non-custodial monitoring layer for AI agent wallets on Arc. It indexes USDC flows in real time, enforces deterministic spend-policy and anomaly rules, and gives builders an audit trail their wallet provider doesn't."*（送件前可再打磨）
+
+## 19. 參考來源（查證於 2026-09-16）
 
 - Circle / Arc 官方開發者文件：`docs.arc.io/arc/references/rpc-endpoints`（Mainnet chain ID 5042、Testnet chain ID 5042002、node provider 清單）
 - Arc Mainnet 上線報導與 USDC 合約位址（6 位小數 vs 原生 18 位小數）、驗證者與共識機制說明
 - Oracle Cloud Always Free 額度變動報導（2026 年 6 月調降、8 月 18 日起強制關機超額執行個體）
 - Circle Developers：`developers.circle.com/agent-stack`、`agent-stack/agent-wallets`（Agent Wallet 的 2-of-2 MPC、spending policy CLI 語法）
 - 使用者先前對話中已查證之 Arc Microgrants 官方申請規則（500 USDC/專案、20 個名額、10/14 23:59 ET 截止、滾動審查）
+- Arc Microgrants 收件平台 DoraHacks（`dorahacks.io/hackathon/arc-microgrants/detail`）及其通用評審框架說明（`dorahacks.io/blog/guides/judging-organizers`）

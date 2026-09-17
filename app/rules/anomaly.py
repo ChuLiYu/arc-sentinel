@@ -15,6 +15,7 @@ GAS_SPIKE_MULTIPLIER = Decimal("5")  # vs. the agent's 30-day average
 def check_failed_tx_spike(
     *,
     agent_id: uuid.UUID,
+    agent_name: str,
     failed_tx_hashes: Iterable[str],
     threshold: int = FAILED_SPIKE_THRESHOLD,
 ) -> list[AlertDraft]:
@@ -31,7 +32,10 @@ def check_failed_tx_spike(
             agent_id=agent_id,
             alert_type="failed_tx_spike",
             severity="warning",
-            message=f"{count} failed transactions in rolling window (>= {threshold})",
+            message=(
+                f"Agent {agent_name} had {count} failed transactions in the "
+                f"last 10 minutes (threshold: {threshold})."
+            ),
         )
     ]
 
@@ -39,6 +43,7 @@ def check_failed_tx_spike(
 def check_gas_spike(
     *,
     agent_id: uuid.UUID,
+    agent_name: str,
     tx_hash: str,
     gas_fee_usdc: Decimal,
     avg_30d_gas_usdc: Decimal,
@@ -64,8 +69,8 @@ def check_gas_spike(
                 alert_type="gas_spike",
                 severity="info",
                 message=(
-                    f"tx {tx_hash} gas fee {gas} USDC > "
-                    f"{multiplier}x 30-day average {avg} USDC"
+                    f"Agent {agent_name} spent ${gas:,.6f} on gas for {tx_hash[:18]}…, "
+                    f"{multiplier}x their 30-day average of ${avg:,.6f}."
                 ),
                 tx_hash=tx_hash,
             )
