@@ -73,7 +73,7 @@ class RpcJsonRpcError(RpcError):
         super().__init__(f"JSON-RPC error {code}: {message}")
 
 
-class RpcProviderDown(RpcError):
+class RpcProviderDown(RpcError):  # noqa: N818 — name pinned by SPEC §13 (`internal_rpc_down` hook)
     """Raised when consecutive failures cross ``max_consecutive_failures``.
 
     This is the recognizable error the worker hooks into for the internal
@@ -118,7 +118,7 @@ class RpcClient:
         self.consecutive_failures = 0
 
     @classmethod
-    def from_settings(cls, settings: Any) -> "RpcClient":
+    def from_settings(cls, settings: Any) -> RpcClient:
         """Build a client from :class:`app.config.Settings`."""
         return cls(
             url=settings.rpc_url,
@@ -194,7 +194,7 @@ class RpcClient:
         """Close the underlying httpx client."""
         await self._client.aclose()
 
-    async def __aenter__(self) -> "RpcClient":
+    async def __aenter__(self) -> RpcClient:
         return self
 
     async def __aexit__(self, *exc_info: object) -> None:
@@ -289,5 +289,8 @@ def _to_int(value: Any) -> int:
     if isinstance(value, int):
         return value
     if isinstance(value, str):
-        return int(value, 16)
+        try:
+            return int(value, 16)
+        except ValueError as exc:
+            raise RpcTransportError(f"expected a hex block number, got {value!r}") from exc
     raise RpcTransportError(f"expected a hex block number, got {value!r}")

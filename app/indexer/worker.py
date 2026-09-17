@@ -26,9 +26,9 @@ import logging
 import signal
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
 from typing import Any, Literal
 
@@ -37,7 +37,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
-from app.db.models import Agent, IndexerState, TokenTransfer, Transaction
+from app.db.models import Agent, TokenTransfer, Transaction
 from app.indexer.decode import (
     NUMERIC_38_MAX,
     TRANSFER_EVENT_SIG,
@@ -150,8 +150,8 @@ def hex_to_int(value: Any) -> int | None:
 
 def _block_time(timestamp: int | None) -> datetime:
     if timestamp is None:
-        return datetime.now(timezone.utc)
-    return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        return datetime.now(UTC)
+    return datetime.fromtimestamp(timestamp, tz=UTC)
 
 
 def _topic_address(address: str) -> str:
@@ -332,7 +332,7 @@ class IndexerWorker:
     @classmethod
     def from_settings(
         cls, settings: Any, rpc: RpcClient | None = None
-    ) -> "IndexerWorker":
+    ) -> IndexerWorker:
         """Build a worker bound to the configured DB and RPC endpoint."""
         from app.db.session import get_session_factory
 
@@ -383,10 +383,8 @@ class IndexerWorker:
 
             elapsed = time.monotonic() - cycle_started
             remaining = max(0.0, self._poll_interval_seconds - elapsed)
-            try:
+            with suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), timeout=remaining)
-            except asyncio.TimeoutError:
-                pass
 
     # ------------------------------------------------------------------
     # One poll cycle
@@ -447,11 +445,15 @@ class IndexerWorker:
             transactions_inserted = 0
             transfers_inserted = 0
             if tx_rows:
-                res = session.execute(build_transaction_upsert(tx_rows))
-                transactions_inserted = max(0, res.rowcount or 0)
+                res = session.execute(
+                    build_transaction_upsert(tx_rows).returning(Transaction.tx_hash)
+                )
+                transactions_inserted = len(res.all())
             if transfer_rows:
-                res = session.execute(build_transfer_upsert(transfer_rows))
-                transfers_inserted = max(0, res.rowcount or 0)
+                res = session.execute(
+                    build_transfer_upsert(transfer_rows).returning(TokenTransfer.id)
+                )
+                transfers_inserted = len(res.all())
 
             set_last_indexed_block(session, self._chain_id, safe_head)
             session.commit()
@@ -515,6 +517,7 @@ class IndexerWorker:
             if transfer.tx_hash not in parsed_hashes:
                 # e.g. relayer-mediated internal receive: the block scan missed it.
                 parsed.append(await self._parse_missing_tx(transfer.tx_hash, wallet_map))
+                parsed_hashes.add(transfer.tx_hash)
 
         return parsed, transfers, skipped
 
