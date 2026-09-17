@@ -485,12 +485,12 @@ SSH 私鑰、DB 密碼、RPC API Key 一律放 GitHub Actions Secrets，絕不�
 
 ## 16. 開放待決事項（需要使用者本人決定，Agent 不應自行假設）
 
-1. 【已決定：Alchemy 為主、dRPC 為備援】——唯一還沒完成的動作是使用者本人去申請帳號＋Arc Mainnet API Key（見 §0 第 2 點）。
+1. ~~RPC provider 選哪家~~ 【已決定：Alchemy 為主、dRPC 為備援】——唯一還沒完成的動作是使用者本人去申請帳號＋Arc Mainnet API Key（見 §0 第 2 點）。
 2. 部署用的網域名稱（買一個網域，或先用 DuckDNS/nip.io 起步）。
 3. Phase 7 用哪一個人類擁有的錢包送測試轉帳、金額多少。
-4. 是否要在 MVP 就整合 Circle CLI 的唯讀查詢（`circle wallet list` / `circle balance`）來補齊「政策設定」這一層資訊，或先只靠鏈上資料推斷；這會影響 Phase 4 的 API 欄位是否需要多打一次 Circle API。
-5. Open-source license 選 MIT 還是 Apache-2.0（皆可，MIT 較簡單，Apache-2.0 多一層專利授權條款）。
-6. Dashboard 要不要公開給任何人瀏覽（增加補助評審與潛在使用者的可見度），還是先鎖 API Key 全部私有。
+4. ~~是否要在 MVP 就整合 Circle CLI 的唯讀查詢~~ 【已決定：MVP 不整合，只靠鏈上資料；列入 README 的 Roadmap，日後有需求再加】。
+5. ~~Open-source license 選 MIT 還是 Apache-2.0~~ 【已決定：MIT】。
+6. ~~Dashboard 要不要公開~~ 【已決定：讀取端點公開（含 Dashboard 首頁與 `/stats/network`），寫入端點依原規劃維持 API Key 保護，不受影響】。
 
 ---
 
