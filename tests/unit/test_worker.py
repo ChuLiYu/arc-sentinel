@@ -419,3 +419,96 @@ class TestIndexRangeMissingTxDedup:
         # tx-level sides still reflect the on-chain submitter, not the USDC sides
         assert parsed[0].from_address == OTHER
         assert parsed[0].to_address == TOKEN
+
+
+# ---------------------------------------------------------------------------
+# SPEC §20.7 — poll_once catch-up is batched per cycle
+# ---------------------------------------------------------------------------
+class _HeadOnlyRpc:
+    """RPC stub serving only eth_blockNumber (no agents ⇒ no further calls)."""
+
+    def __init__(self, head: int) -> None:
+        self._head = head
+
+    async def eth_block_number(self) -> int:
+        return self._head
+
+
+class _FakeState:
+    def __init__(self, block: int) -> None:
+        self.last_indexed_block = block
+
+
+class _EmptyScalars:
+    def all(self) -> list[Any]:
+        return []
+
+
+class _FakeSession:
+    """Stand-in for a SQLAlchemy Session on poll_once's no-agents path."""
+
+    def __init__(self, last: int) -> None:
+        self._last = last
+        self.committed = False
+
+    def __enter__(self) -> _FakeSession:
+        return self
+
+    def __exit__(self, *exc_info: object) -> bool:
+        return False
+
+    def get(self, model: object, chain_id: int) -> _FakeState | None:
+        return _FakeState(self._last)
+
+    def scalars(self, statement: object) -> _EmptyScalars:
+        return _EmptyScalars()
+
+    def commit(self) -> None:
+        self.committed = True
+
+
+class TestPollOnceCatchUpBatchCap:
+    async def test_backlog_capped_at_max_blocks_per_cycle(self, monkeypatch) -> None:
+        written: list[int] = []
+        monkeypatch.setattr(
+            "app.indexer.worker.set_last_indexed_block",
+            lambda session, chain_id, block: written.append(block),
+        )
+        # head 502, confirmations=2 ⇒ safe_head=500; breakpoint at 100 ⇒ a
+        # 400-block backlog — but one cycle may index only 80 blocks and the
+        # remainder is left for later cycles (SPEC §20.7).
+        worker = IndexerWorker(
+            session_factory=lambda: _FakeSession(last=100),
+            rpc=_HeadOnlyRpc(head=502),
+            chain_id=1,
+            usdc_address=TOKEN,
+            confirmations=2,
+            max_blocks_per_cycle=80,
+        )
+        result = await worker.poll_once()
+        assert result.from_block == 101
+        assert result.to_block == 180  # 101 + 80 - 1
+        assert result.last_indexed_block == 180
+        assert written == [180]
+
+    async def test_small_lag_indexes_through_safe_head(self, monkeypatch) -> None:
+        written: list[int] = []
+        monkeypatch.setattr(
+            "app.indexer.worker.set_last_indexed_block",
+            lambda session, chain_id, block: written.append(block),
+        )
+        # A 10-block lag is within the 80-block cap → the whole safe head is
+        # indexed in one cycle, exactly like the pre-batching behaviour.
+        worker = IndexerWorker(
+            session_factory=lambda: _FakeSession(last=490),
+            rpc=_HeadOnlyRpc(head=502),
+            chain_id=1,
+            usdc_address=TOKEN,
+            confirmations=2,
+            max_blocks_per_cycle=80,
+        )
+        result = await worker.poll_once()
+        assert result.from_block == 491
+        assert result.to_block == 500  # min(500, 491 + 80 - 1)
+        assert result.last_indexed_block == 500
+        assert written == [500]

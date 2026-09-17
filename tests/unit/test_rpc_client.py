@@ -309,6 +309,9 @@ async def test_probe_primary_and_switch_back_after_recovery(url: str):
         backoff_max_seconds=0.01,
         max_consecutive_failures=2,
         probe_after_successes=1,
+        # Probe-on-next-success mechanics under test; the SPEC §20.7 minimum
+        # fallback-stay gate is deliberately disabled (see the dedicated tests).
+        min_fallback_stay_seconds=0,
     )
     try:
         assert await c.eth_block_number() == 300
@@ -338,6 +341,7 @@ async def test_probe_primary_failure_stays_on_fallback(url: str):
         backoff_max_seconds=0.01,
         max_consecutive_failures=2,
         probe_after_successes=1,
+        min_fallback_stay_seconds=0,
     )
     try:
         assert await c.eth_block_number() == 500
@@ -347,5 +351,211 @@ async def test_probe_primary_failure_stays_on_fallback(url: str):
         assert await c.eth_block_number() == 500
         assert c.using_fallback is True
         assert c.active_url == fallback
+    finally:
+        await c.close()
+
+
+# ---------------------------------------------------------------------------
+# SPEC §20.7 — HTTP 429 rate-limit resilience
+# ---------------------------------------------------------------------------
+async def _noop_sleep(_seconds: float) -> None:
+    """Do not actually wait; keeps 429 retry storms fast in tests."""
+
+
+class _FakeClock:
+    """Injectable monotonic clock so fallback-stay tests control time."""
+
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+
+def test_rate_limit_backoff_schedule_is_separate_and_steeper():
+    c = RpcClient(
+        url="https://x",
+        max_retries=5,
+        backoff_base_seconds=1.0,
+        backoff_max_seconds=60.0,
+        rate_limit_backoff_base_seconds=15.0,
+    )
+    # Generic errors: 1s → 2s → 4s → 8s → 16s.
+    assert c.backoff_schedule == [1.0, 2.0, 4.0, 8.0, 16.0]
+    # HTTP 429: 15s → 30s → 60s → capped at 60s — longer AND steeper, and it
+    # is an independent schedule, never mixed with the generic one.
+    assert c.rate_limit_backoff_schedule == [15.0, 30.0, 60.0, 60.0, 60.0]
+    assert c.rate_limit_backoff_schedule != c.backoff_schedule
+
+
+@respx.mock
+async def test_429_storm_never_raises_provider_down(url: str):
+    respx.post(url).mock(return_value=httpx.Response(429, text="rate limited"))
+    # Tiny max_consecutive_failures on purpose: a 429 storm must NOT trip the
+    # provider-down detection (SPEC §20.7) no matter how long it lasts.
+    c = RpcClient(
+        url=url,
+        max_retries=2,
+        backoff_base_seconds=0.001,
+        backoff_max_seconds=0.01,
+        max_consecutive_failures=2,
+        rate_limit_backoff_base_seconds=15.0,
+        sleep=_noop_sleep,
+    )
+    try:
+        with pytest.raises(RpcHttpError) as exc_info:
+            await c.eth_block_number()
+        assert exc_info.value.status_code == 429
+        assert c.consecutive_failures == 0, "429 must not count toward provider-down"
+        assert c.rate_limit_strikes == 3  # 1 initial + 2 retries, all 429
+
+        # A second call against the always-429 provider still raises 429 —
+        # it must never escalate to RpcProviderDown.
+        with pytest.raises(RpcHttpError):
+            await c.eth_block_number()
+        assert c.rate_limit_strikes == 6
+        assert c.consecutive_failures == 0
+    finally:
+        await c.close()
+
+
+@respx.mock
+async def test_429_retries_use_rate_limit_backoff_schedule(url: str):
+    slept: list[float] = []
+
+    async def recording_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    responses = [
+        httpx.Response(429, text="rate limited"),
+        httpx.Response(429, text="rate limited"),
+        httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "0x1"}),
+    ]
+    respx.post(url).mock(side_effect=responses)
+    c = RpcClient(
+        url=url,
+        max_retries=3,
+        backoff_base_seconds=1.0,
+        backoff_max_seconds=60.0,
+        rate_limit_backoff_base_seconds=15.0,
+        sleep=recording_sleep,
+    )
+    try:
+        assert await c.eth_block_number() == 1
+        # 429s slept the rate-limit schedule (15s, 30s) — NOT backoff_schedule.
+        assert slept == [15.0, 30.0]
+        # The eventual 200 resets every counter.
+        assert c.rate_limit_strikes == 0
+        assert c.consecutive_failures == 0
+    finally:
+        await c.close()
+
+
+# ---------------------------------------------------------------------------
+# SPEC §20.7 — minimum fallback stay (no provider ping-ponging)
+# ---------------------------------------------------------------------------
+@respx.mock
+async def test_min_fallback_stay_blocks_probe_until_window_elapses(url: str):
+    fallback = "https://rpc.drpc.mainnet.arc.io"
+    # Primary: 2 failures (drives failover), then recovers (probe + real call).
+    primary_seq = [
+        httpx.Response(503, text="down"),
+        httpx.Response(503, text="down"),
+        httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "0x12c"}),  # probe
+        httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "0x12c"}),
+    ]
+    respx.post(url).mock(side_effect=primary_seq)
+    respx.post(fallback).mock(
+        return_value=httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "0x12c"})
+    )
+    clock = _FakeClock()
+    c = RpcClient(
+        url=url,
+        fallback_url=fallback,
+        max_retries=5,
+        backoff_base_seconds=0.001,
+        backoff_max_seconds=0.01,
+        max_consecutive_failures=2,
+        probe_after_successes=1,
+        min_fallback_stay_seconds=120.0,
+        now=clock,
+        sleep=_noop_sleep,
+    )
+    try:
+        assert await c.eth_block_number() == 300
+        assert c.using_fallback is True
+
+        # probe_after_successes=1 is reached, but only 60s of the 120s
+        # minimum stay have elapsed → the probe is postponed and the call is
+        # still served by the fallback.
+        clock.value += 60.0
+        assert await c.eth_block_number() == 300
+        assert c.using_fallback is True
+        assert c.active_url == fallback
+
+        # Past the 120s stay (total 121s) the probe fires, finds the primary
+        # recovered, and switches back.
+        clock.value += 61.0
+        assert await c.eth_block_number() == 300
+        assert c.using_fallback is False
+        assert c.active_url == url
+    finally:
+        await c.close()
+
+
+@respx.mock
+async def test_fallback_stay_extends_after_rate_limit_storm(url: str):
+    fallback = "https://rpc.drpc.mainnet.arc.io"
+    # 12 x 429 accumulated during retries, then 2 x 503 to trigger the
+    # failover, then a recovered primary (probe + real call).
+    primary_seq = [
+        *(httpx.Response(429, text="rate limited") for _ in range(12)),
+        httpx.Response(503, text="down"),
+        httpx.Response(503, text="down"),
+        httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "0x12c"}),  # probe
+        httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "0x12c"}),
+    ]
+    respx.post(url).mock(side_effect=primary_seq)
+    respx.post(fallback).mock(
+        return_value=httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": "0x12c"})
+    )
+    clock = _FakeClock()
+    c = RpcClient(
+        url=url,
+        fallback_url=fallback,
+        max_retries=2,
+        backoff_base_seconds=0.001,
+        backoff_max_seconds=0.01,
+        max_consecutive_failures=2,
+        probe_after_successes=1,
+        min_fallback_stay_seconds=120.0,
+        rate_limit_backoff_base_seconds=15.0,
+        now=clock,
+        sleep=_noop_sleep,
+    )
+    try:
+        # max_retries=2 ⇒ 3 attempts/call; four calls burn the 12 x 429.
+        for _ in range(4):
+            with pytest.raises(RpcHttpError):
+                await c.eth_block_number()
+        assert c.rate_limit_strikes == 12
+        assert c.consecutive_failures == 0
+
+        # The remaining 503s finally trigger failover; strikes (12) are
+        # snapshotted to extend the fallback stay: 120s * (1 + 12//10) = 240s.
+        assert await c.eth_block_number() == 300
+        assert c.using_fallback is True
+
+        # 120s have elapsed — the base window — but not the extended 240s.
+        clock.value += 120.0
+        assert await c.eth_block_number() == 300
+        assert c.using_fallback is True
+        assert c.active_url == fallback
+
+        # 240s total elapsed → probe fires and primary has recovered.
+        clock.value += 121.0
+        assert await c.eth_block_number() == 300
+        assert c.using_fallback is False
+        assert c.active_url == url
     finally:
         await c.close()

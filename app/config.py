@@ -51,14 +51,27 @@ class Settings(BaseSettings):
     poll_interval_seconds: float = 3.0
     confirmations: int = 2  # only index up to head - N blocks
 
-    # --- Indexer RPC client (SPEC §2/§4/§13) ---------------------------
+    # --- Indexer RPC client (SPEC §2/§4/§13/§20.7) ----------------------
     rpc_timeout_seconds: float = 15.0
     rpc_max_retries: int = 5
     rpc_backoff_base_seconds: float = 1.0  # delays: 1s → 2s → 4s → … capped
-    rpc_backoff_max_seconds: float = 30.0
+    rpc_backoff_max_seconds: float = 60.0  # generic + rate-limit retry ceiling
     rpc_max_consecutive_failures: int = 5  # → internal_rpc_down alert (§13)
+    # SPEC §20.7 — HTTP 429 is transient throttling, not an outage: it gets a
+    # longer, steeper backoff (15s → 30s → 60s → … capped) and never counts
+    # toward the provider-down threshold.
+    rpc_rate_limit_backoff_base_seconds: float = 15.0
+    # SPEC §20.7 — minimum time on the fallback provider before the primary may
+    # be probed again (extended after a 429 storm), preventing ping-ponging.
+    rpc_min_fallback_stay_seconds: float = 120.0
     # Alchemy Free tier caps eth_getLogs block range at 10; use a small chunk.
     rpc_logs_max_range_size: int = 10  # eth_getLogs chunk width (blocks)
+    # SPEC §20.7 — one catch-up cycle indexes at most this many blocks so a big
+    # backlog never exhausts a free-tier provider's CU budget in a single poll.
+    max_blocks_per_cycle: int = Field(
+        default=80,
+        validation_alias=AliasChoices("MAX_BLOCKS_PER_CYCLE"),
+    )
     usdc_address: str = "0x3600000000000000000000000000000000000000"
 
     # --- API ------------------------------------------------------------

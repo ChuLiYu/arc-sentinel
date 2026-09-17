@@ -6,20 +6,30 @@ Wraps ``httpx.AsyncClient`` with the three calls the Indexer Worker needs:
 * ``eth_getBlockByNumber``       — one block, full transactions
 * ``eth_getLogs``                — filtered by address + Transfer topic + range
 
-Hard requirements implemented here (SPEC §13 + Phase 2.5):
+Hard requirements implemented here (SPEC §13 + Phase 2.5 + §20.7):
 
 * **Exponential backoff retries** — delays follow ``base → base*2 → base*4 → …``
-  capped at ``backoff_max_seconds`` (1s → 2s → 4s → … → 30s by default).
+  capped at ``backoff_max_seconds`` (1s → 2s → 4s → … → 60s by default).
+* **Rate-limit backoff (429)** — HTTP 429 is transient provider throttling, not
+  an outage (SPEC §20.7). It uses its own, longer and steeper retry schedule
+  (``rate_limit_backoff_schedule``: 15s → 30s → 60s → … by default) and is
+  tracked in a separate ``rate_limit_strikes`` counter. 429s are retryable but
+  **never** count toward ``consecutive_failures`` / ``RpcProviderDown``, so a
+  free-tier CU storm cannot fire a false ``internal_rpc_down`` alert.
 * **Timeouts** — every request is bounded by ``timeout``.
 * **Consecutive-failure counter** — persists across calls and raises
-  :class:`RpcProviderDown` once the threshold is crossed so the worker can fire
-  the internal ``internal_rpc_down`` alert instead of silently hanging.
+  :class:`RpcProviderDown` once the threshold is crossed (429s excluded) so the
+  worker can fire the internal ``internal_rpc_down`` alert instead of silently
+  hanging.
 * **dRPC fallback (Phase 2.5)** — when the primary URL fails
   ``max_consecutive_failures`` times in a row the client automatically fails
   over to ``fallback_url``. After the fallback has served
   ``probe_after_successes`` successful calls it probes the primary again and
-  switches back as soon as it recovers. If the fallback also fails the client
-  raises :class:`RpcProviderDown` exactly as before (single-provider behaviour).
+  switches back as soon as it recovers. The probe only fires after a minimum
+  ``min_fallback_stay_seconds`` window (extended when the failover followed a
+  429 storm) so provider ping-ponging is avoided. If the fallback also fails
+  the client raises :class:`RpcProviderDown` exactly as before (single-provider
+  behaviour).
 * **Recognizable errors** — a small exception hierarchy so callers can classify
   transport / HTTP / JSON-RPC failures precisely.
 """
@@ -28,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
@@ -38,9 +49,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = 15.0
 DEFAULT_MAX_RETRIES = 5
 DEFAULT_BACKOFF_BASE = 1.0
-DEFAULT_BACKOFF_MAX = 30.0
+DEFAULT_BACKOFF_MAX = 60.0
+DEFAULT_RATE_LIMIT_BACKOFF_BASE = 15.0
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 5
 DEFAULT_PROBE_AFTER_SUCCESSES = 5
+DEFAULT_MIN_FALLBACK_STAY_SECONDS = 120.0
+#: Upper bound for the 429-storm fallback-stay extension (multiples of the
+#: configured ``min_fallback_stay_seconds``); keeps the extension bounded.
+MAX_FALLBACK_STAY_MULTIPLIER = 10
 
 # JSON-RPC error codes that indicate a provider-side hiccup worth retrying
 # (generic server error range -32000..-32099 plus "internal error" -32603).
@@ -109,9 +125,12 @@ class RpcClient:
         max_retries: int = DEFAULT_MAX_RETRIES,
         backoff_base_seconds: float = DEFAULT_BACKOFF_BASE,
         backoff_max_seconds: float = DEFAULT_BACKOFF_MAX,
+        rate_limit_backoff_base_seconds: float = DEFAULT_RATE_LIMIT_BACKOFF_BASE,
         max_consecutive_failures: int = DEFAULT_MAX_CONSECUTIVE_FAILURES,
         probe_after_successes: int = DEFAULT_PROBE_AFTER_SUCCESSES,
+        min_fallback_stay_seconds: float = DEFAULT_MIN_FALLBACK_STAY_SECONDS,
         sleep: Callable[[float], Awaitable[None]] | None = None,
+        now: Callable[[], float] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._url = url
@@ -119,9 +138,12 @@ class RpcClient:
         self._max_retries = max_retries
         self._backoff_base = backoff_base_seconds
         self._backoff_max = backoff_max_seconds
+        self._rate_limit_backoff_base = rate_limit_backoff_base_seconds
         self.max_consecutive_failures = max_consecutive_failures
         self._probe_after_successes = max(1, probe_after_successes)
+        self._min_fallback_stay_seconds = min_fallback_stay_seconds
         self._sleep = sleep or asyncio.sleep
+        self._now = now or time.monotonic
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._request_id = 0
 
@@ -131,9 +153,20 @@ class RpcClient:
         self._fallback_success_streak = 0
         #: Set once the fallback is healthy long enough to probe the primary.
         self._pending_primary_probe = False
+        #: ``time.monotonic()`` when the fallback became active (probe gate).
+        self._fallback_since: float | None = None
+        #: How many 429 strikes preceded the current failover — extends the
+        #: minimum fallback stay so a primary in a rate-limit storm is not
+        #: probed back too eagerly (SPEC §20.7).
+        self._fallback_rate_limit_strikes = 0
 
-        #: Public counter of consecutive failed *calls* (reset on success).
+        #: Public counter of consecutive failed *calls* (reset on success,
+        #: never incremented by HTTP 429).
         self.consecutive_failures = 0
+        #: Public counter of HTTP 429 rate-limit responses (reset on success).
+        #: Kept separate from ``consecutive_failures`` so a 429 storm cannot
+        #: trigger :class:`RpcProviderDown` (SPEC §20.7).
+        self.rate_limit_strikes = 0
 
     @classmethod
     def from_settings(cls, settings: Any) -> RpcClient:
@@ -145,7 +178,9 @@ class RpcClient:
             max_retries=settings.rpc_max_retries,
             backoff_base_seconds=settings.rpc_backoff_base_seconds,
             backoff_max_seconds=settings.rpc_backoff_max_seconds,
+            rate_limit_backoff_base_seconds=settings.rpc_rate_limit_backoff_base_seconds,
             max_consecutive_failures=settings.rpc_max_consecutive_failures,
+            min_fallback_stay_seconds=settings.rpc_min_fallback_stay_seconds,
         )
 
     # ------------------------------------------------------------------
@@ -166,9 +201,25 @@ class RpcClient:
     # ------------------------------------------------------------------
     @property
     def backoff_schedule(self) -> list[float]:
-        """The exact retry delays used, in seconds (``base*2**i`` capped)."""
+        """The exact retry delays used for generic transient errors, in seconds
+        (``base*2**i`` capped at ``backoff_max_seconds``)."""
         return [
             min(self._backoff_base * (2.0**i), self._backoff_max)
+            for i in range(self._max_retries)
+        ]
+
+    @property
+    def rate_limit_backoff_schedule(self) -> list[float]:
+        """The exact retry delays used for HTTP 429 rate limiting, in seconds.
+
+        Independent of :attr:`backoff_schedule`: starts at
+        ``rate_limit_backoff_base_seconds`` (15s) and doubles harder (15s →
+        30s → 60s → …), capped at ``backoff_max_seconds``. A free-tier provider
+        recovers its CU quota far slower than a generic server hiccup, so 429s
+        deserve a much longer, steeper schedule (SPEC §20.7).
+        """
+        return [
+            min(self._rate_limit_backoff_base * (2.0**i), self._backoff_max)
             for i in range(self._max_retries)
         ]
 
@@ -265,8 +316,15 @@ class RpcClient:
         attempt = 0
         while True:
             # When the fallback has been healthy, probe the primary on the
-            # next call so we automatically switch back once it recovers.
-            if self.using_fallback and self._pending_primary_probe:
+            # next call so we automatically switch back once it recovers — but
+            # only after the minimum fallback-stay window has elapsed
+            # (SPEC §20.7), so a primary in a 429 storm does not cause provider
+            # ping-ponging.
+            if (
+                self.using_fallback
+                and self._pending_primary_probe
+                and self._fallback_stay_elapsed()
+            ):
                 await self._probe_primary()
 
             error = await self._attempt(method, params)
@@ -275,6 +333,29 @@ class RpcClient:
                 return self._last_result  # type: ignore[attr-defined]
             if not _is_retryable(error):
                 raise error
+
+            if self._is_rate_limit(error):
+                # HTTP 429 = transient provider throttling, not an outage.
+                # Track it separately so it can never drive the
+                # provider-down / failover decision, and back off much harder
+                # than for generic server errors (SPEC §20.7). A 429 storm
+                # keeps retrying (with ever-longer delays) even past
+                # max_consecutive_failures — it must NOT raise RpcProviderDown.
+                self.rate_limit_strikes += 1
+                if attempt >= self._max_retries:
+                    raise error
+                delay = self.rate_limit_backoff_schedule[attempt]
+                attempt += 1
+                logger.warning(
+                    "RPC %s rate-limited (%s); retrying %d/%d in %.1fs",
+                    method,
+                    error,
+                    attempt,
+                    self._max_retries,
+                    delay,
+                )
+                await self._sleep(delay)
+                continue
 
             self.consecutive_failures += 1
             if self.consecutive_failures >= self.max_consecutive_failures:
@@ -298,6 +379,10 @@ class RpcClient:
                 self._active_is_primary = False
                 self._fallback_success_streak = 0
                 self.consecutive_failures = 0
+                # Remember *when* we left the primary and how badly it was
+                # rate-limited, to gate the probe-return (SPEC §20.7).
+                self._fallback_since = self._now()
+                self._fallback_rate_limit_strikes = self.rate_limit_strikes
                 attempt = 0  # start a fresh retry budget on the fallback
                 continue
 
@@ -321,11 +406,34 @@ class RpcClient:
     def _record_success(self) -> None:
         """Reset failure counters and schedule a primary probe when needed."""
         self.consecutive_failures = 0
+        self.rate_limit_strikes = 0
         if self.using_fallback:
             self._fallback_success_streak += 1
             if self._fallback_success_streak >= self._probe_after_successes:
                 self._pending_primary_probe = True
                 self._fallback_success_streak = 0
+
+    @staticmethod
+    def _is_rate_limit(error: RpcError) -> bool:
+        """True when the failure is an HTTP 429 (provider throttling)."""
+        return isinstance(error, RpcHttpError) and error.status_code == 429
+
+    def _fallback_stay_elapsed(self) -> bool:
+        """True when the primary may be probed again.
+
+        Governed by ``min_fallback_stay_seconds`` — a plain timestamp gate, not
+        success counts — so flipping back happens on our schedule, not the
+        provider's. When the current failover followed a 429 storm the window
+        is extended (up to ``MAX_FALLBACK_STAY_MULTIPLIER`` x) so a
+        rate-limited primary is not re-adopted until it has had time to drain
+        its CU quota (SPEC §20.7).
+        """
+        if self._fallback_since is None:
+            return True
+        multiplier = 1 + self._fallback_rate_limit_strikes // 10
+        multiplier = min(multiplier, MAX_FALLBACK_STAY_MULTIPLIER)
+        required = self._min_fallback_stay_seconds * multiplier
+        return self._now() - self._fallback_since >= required
 
     async def _probe_primary(self) -> None:
         """Try one lightweight call on the primary; switch back on success."""
@@ -340,6 +448,8 @@ class RpcClient:
                 logger.info("RPC primary recovered — switching back to %s", self._url)
                 self._active_is_primary = True
                 self._fallback_success_streak = 0
+                self._fallback_since = None
+                self._fallback_rate_limit_strikes = 0
         except (httpx.HTTPError, ValueError):
             logger.debug("RPC primary probe failed; staying on fallback")
 

@@ -17,6 +17,9 @@ Design decisions (mirroring the spec):
 * **Durable breakpoint** — ``indexer_state.last_indexed_block`` advances in the
   same transaction as the rows; a SIGTERM/SIGINT between cycles loses nothing
   because each cycle is already committed.
+* **Batched catch-up (SPEC §20.7)** — a cycle indexes at most
+  ``max_blocks_per_cycle`` blocks, so a large backlog is drained gradually
+  instead of exhausting a free-tier provider's rate-limit budget in one go.
 """
 
 from __future__ import annotations
@@ -320,6 +323,7 @@ class IndexerWorker:
         confirmations: int = 2,
         poll_interval_seconds: float = 3.0,
         logs_max_range_size: int = 2000,
+        max_blocks_per_cycle: int = 80,
     ) -> None:
         self._factory = session_factory
         self._rpc = rpc
@@ -328,6 +332,7 @@ class IndexerWorker:
         self._confirmations = confirmations
         self._poll_interval_seconds = poll_interval_seconds
         self._logs_max_range_size = logs_max_range_size
+        self._max_blocks_per_cycle = max_blocks_per_cycle
 
     @classmethod
     def from_settings(
@@ -344,6 +349,7 @@ class IndexerWorker:
             confirmations=settings.confirmations,
             poll_interval_seconds=settings.poll_interval_seconds,
             logs_max_range_size=settings.rpc_logs_max_range_size,
+            max_blocks_per_cycle=settings.max_blocks_per_cycle,
         )
 
     # ------------------------------------------------------------------
@@ -390,7 +396,12 @@ class IndexerWorker:
     # One poll cycle
     # ------------------------------------------------------------------
     async def poll_once(self) -> PollResult:
-        """Fetch head, index ``[last+1 .. head-confirmations]``, persist state."""
+        """Fetch head, index ``[last+1 .. to_block]`` (batched catch-up), persist state.
+
+        ``to_block`` is capped at ``max_blocks_per_cycle`` blocks per cycle
+        (SPEC §20.7); a backlog larger than that is caught up over several
+        cycles instead of hammering the provider in one backfill.
+        """
         head = await self._rpc.eth_block_number()
         safe_head = max(0, head - self._confirmations)
 
@@ -424,6 +435,13 @@ class IndexerWorker:
                     last_indexed_block=last,
                 )
 
+            # Catch-up batching (SPEC §20.7): index at most
+            # ``max_blocks_per_cycle`` blocks per cycle so a large backlog
+            # never exhausts the provider's rate-limit budget in one giant
+            # backfill. The remainder is picked up on subsequent cycles and
+            # ``last_indexed_block`` advances only as far as ``to_block``.
+            to_block = min(safe_head, from_block + self._max_blocks_per_cycle - 1)
+
             agents = self._load_active_agents(session)
             wallet_map = {
                 agent.wallet_address.lower(): agent.id for agent in agents
@@ -434,7 +452,7 @@ class IndexerWorker:
             if wallet_map:
                 parsed_txs, parsed_transfers, skipped = await self._index_range(
                     from_block=from_block,
-                    to_block=safe_head,
+                    to_block=to_block,
                     wallet_map=wallet_map,
                 )
                 if skipped:
@@ -455,7 +473,7 @@ class IndexerWorker:
                 )
                 transfers_inserted = len(res.all())
 
-            set_last_indexed_block(session, self._chain_id, safe_head)
+            set_last_indexed_block(session, self._chain_id, to_block)
             session.commit()
 
             return PollResult(
@@ -463,10 +481,10 @@ class IndexerWorker:
                 head=head,
                 safe_head=safe_head,
                 from_block=from_block,
-                to_block=safe_head,
+                to_block=to_block,
                 transactions_inserted=transactions_inserted,
                 transfers_inserted=transfers_inserted,
-                last_indexed_block=safe_head,
+                last_indexed_block=to_block,
             )
 
     def _load_active_agents(self, session: Session) -> list[Agent]:
