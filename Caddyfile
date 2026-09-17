@@ -1,0 +1,5 @@
+# Caddy TLS terminator (SPEC §11). Domain comes from env ARC_SENTINEL_DOMAIN.
+# Without it we serve plain HTTP on :80 for small-step local/preview use.
+{$ARC_SENTINEL_DOMAIN:localhost} {
+	reverse_proxy api:8000
+}
