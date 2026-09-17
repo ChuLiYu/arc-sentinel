@@ -1,0 +1,25 @@
+name: Health Check
+
+# Scheduled liveness probe against the public /health endpoint.
+# Writes an Alertmanager-style failure if the service is unreachable
+# for 3 consecutive runs (kept simple: fail the job, GitHub notifies).
+on:
+  schedule:
+    - cron: "*/30 * * * *" # every 30 minutes
+  workflow_dispatch:
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    if: vars.ARC_SENTINEL_DOMAIN != ''
+    steps:
+      - name: Probe /health
+        run: |
+          body="$(curl -fsS --max-time 20 "https://${{ vars.ARC_SENTINEL_DOMAIN }}/api/v1/health" || true)"
+          if [ -z "$body" ]; then
+            echo "::error::health endpoint unreachable"
+            exit 1
+          fi
+          echo "$body" | jq -e '.status == "ok" or .status == "degraded"' >/dev/null \
+            || { echo "::error::unexpected health payload: $body"; exit 1; }
+          echo "health ok: $body"

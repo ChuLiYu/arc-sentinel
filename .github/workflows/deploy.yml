@@ -1,0 +1,38 @@
+name: Deploy
+
+# Triggered manually (or on push to main once human provides OCI details).
+# Requires repo secrets: SSH_HOST, SSH_USER, SSH_KEY (H-2/H-3).
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["docker-compose.yml", ".github/workflows/deploy.yml"]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: vars.ARC_SENTINEL_DOMAIN != '' && secrets.SSH_HOST != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s' "${{ secrets.SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Pull and restart on VM
+        env:
+          HOST: ${{ secrets.SSH_HOST }}
+          USER: ${{ secrets.SSH_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${USER}@${HOST} '
+            set -e
+            cd ~/arc-sentinel
+            git pull --ff-only
+            docker compose pull api indexer
+            docker compose up -d --no-deps api indexer
+          '
+
+      - name: Smoke check
+        run: curl -fsS --max-time 30 "https://${{ vars.ARC_SENTINEL_DOMAIN }}/api/v1/health"
