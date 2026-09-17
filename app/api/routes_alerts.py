@@ -1,4 +1,4 @@
-"""Alert + budget + stats routes (SPEC §8)."""
+"""Alert + budget routes (SPEC §8). Network stats live in routes_stats.py."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_api_key
-from app.db.models import Agent, Alert, Budget, TokenTransfer, Transaction
+from app.db.models import Alert, Budget
 from app.db.session import get_session
 
 router = APIRouter(tags=["alerts"])
@@ -89,17 +89,3 @@ def create_budget(
     session.commit()
     session.refresh(budget)
     return budget
-
-
-@router.get("/stats/network")
-def network_stats(session: Session = Depends(get_session)) -> dict[str, object]:
-    agent_count = session.scalar(select(func.count()).select_from(Agent))
-    tx_count = session.scalar(select(func.count()).select_from(Transaction))
-    usdc_volume = session.scalar(
-        select(func.coalesce(func.sum(TokenTransfer.amount_usdc), Decimal("0")))
-    )
-    return {
-        "tracked_agents": int(agent_count or 0),
-        "indexed_transactions": int(tx_count or 0),
-        "cumulative_usdc_volume": str(usdc_volume),
-    }

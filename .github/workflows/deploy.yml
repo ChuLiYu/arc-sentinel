@@ -1,17 +1,18 @@
 name: Deploy
 
 # Triggered manually (or on push to main once human provides OCI details).
-# Secrets consumed (see SPEC §11.4):
+# Secrets consumed (SPEC §17 credentials map):
 #   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_PRIVATE_KEY — SSH into VM
 #   ARC_MAINNET_RPC_URL — Alchemy mainnet RPC (written into VM .env)
+#   ARC_MAINNET_RPC_FALLBACK_URL — dRPC mainnet fallback (Phase 2.5)
 #   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB — DB credentials
-#   API_KEY_HASH — write-scope API key hash
+#   SENTINEL_API_KEY_SALT — hash salt for write-scope API keys
 #   vars.ARC_SENTINEL_DOMAIN — public domain for Caddy TLS
 on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ["docker-compose.yml", ".github/workflows/deploy.yml"]
+    paths: ["docker-compose.yml", "docker-compose.prod.yml", ".github/workflows/deploy.yml"]
 
 jobs:
   deploy:
@@ -31,28 +32,31 @@ jobs:
           HOST: ${{ secrets.DEPLOY_HOST }}
           USER: ${{ secrets.DEPLOY_USER }}
           RPC_URL: ${{ secrets.ARC_MAINNET_RPC_URL }}
+          RPC_FALLBACK: ${{ secrets.ARC_MAINNET_RPC_FALLBACK_URL }}
           CHAIN_ID: "5042"
           PG_USER: ${{ secrets.POSTGRES_USER }}
           PG_PASS: ${{ secrets.POSTGRES_PASSWORD }}
           PG_DB: ${{ secrets.POSTGRES_DB }}
-          API_KEY_HASH: ${{ secrets.API_KEY_HASH }}
+          API_KEY_SALT: ${{ secrets.SENTINEL_API_KEY_SALT }}
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${USER}@${HOST} '
             set -e
             cd ~/arc-sentinel
             git pull --ff-only
-            # CI/CD is the source of truth for production secrets (SPEC §11.4):
+            # CI/CD is the source of truth for production secrets (SPEC §17):
             cat > .env <<EOF
             DATABASE_URL=postgresql+psycopg://'$PG_USER':'$PG_PASS'@localhost:5432/'$PG_DB'
-            RPC_URL='$RPC_URL'
+            ARC_MAINNET_RPC_URL='$RPC_URL'
+            ARC_MAINNET_RPC_FALLBACK_URL='$RPC_FALLBACK'
             CHAIN_ID='$CHAIN_ID'
             POSTGRES_USER='$PG_USER'
             POSTGRES_PASSWORD='$PG_PASS'
             POSTGRES_DB='$PG_DB'
-            API_KEY_HASH='$API_KEY_HASH'
+            SENTINEL_API_KEY_SALT='$API_KEY_SALT'
             EOF
-            docker compose pull
-            docker compose up -d
+            chmod 600 .env
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d
           '
 
       - name: Smoke check

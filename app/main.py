@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api import routes_agents, routes_alerts, routes_transactions
+from app.api import routes_agents, routes_alerts, routes_stats, routes_transactions
 from app.api.deps import require_api_key
 from app.config import get_settings
 from app.db.models import Agent, Alert, IndexerState, Transaction
@@ -148,6 +148,7 @@ app.include_router(api)
 app.include_router(routes_agents.router, prefix="/api/v1")
 app.include_router(routes_transactions.router, prefix="/api/v1")
 app.include_router(routes_alerts.router, prefix="/api/v1")
+app.include_router(routes_stats.router, prefix="/api/v1")
 
 
 @app.get("/", response_class=HTMLResponse)
