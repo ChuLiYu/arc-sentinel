@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }}</title>
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:ui-sans-serif, system-ui, sans-serif; background:var(--bg); color:var(--fg); display:flex; align-items:center; justify-content:center; min-height:100vh; }
+    .hero { text-align:center; }
+    h1 { font-size:2.5rem; margin:0 0 .25rem; }
+    p { color:var(--muted); }
+    a { color:var(--accent); }
+    .tag { display:inline-block; margin-top:1rem; padding:.3rem .8rem; border:1px solid #334155; border-radius:9999px; font-size:.8rem; color:var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <h1>Arc Sentinel</h1>
+    <p>Non-custodial, read-only monitoring of agent wallet USDC flows on Arc mainnet.</p>
+    <a href="/api/v1/dashboard">Open dashboard</a>
+    <div class="tag">Arc Microgrants MVP &middot; open source &middot; zero-cost on OCI Always Free</div>
+  </div>
+</body>
+</html>

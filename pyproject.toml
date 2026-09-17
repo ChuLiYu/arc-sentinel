@@ -15,6 +15,7 @@ dependencies = [
     "pydantic>=2.8.2,<3",
     "pydantic-settings>=2.3.4,<3",
     "httpx>=0.27.0,<1",
+    "jinja2>=3.1.6",
 ]
 
 [dependency-groups]
@@ -39,6 +40,10 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI idiom: Depends(...) as a default arg is intentional.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.security.HTTPBearer"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

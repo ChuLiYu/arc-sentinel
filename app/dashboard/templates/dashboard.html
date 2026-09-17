@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Arc Sentinel</title>
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --fg:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --ok:#4ade80; --warn:#facc15; --crit:#f87171; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: ui-sans-serif, system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+    header { padding:1.2rem 2rem; border-bottom:1px solid #334155; display:flex; align-items:baseline; gap:1rem; }
+    h1 { font-size:1.25rem; margin:0; }
+    header span { color:var(--muted); font-size:.85rem; }
+    main { padding:1.5rem 2rem; max-width:1100px; margin:0 auto; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:1rem; margin-bottom:1.5rem; }
+    .card { background:var(--card); border:1px solid #334155; border-radius:.75rem; padding:1rem; }
+    .card h2 { font-size:1rem; margin:0 0 .75rem; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.03em; }
+    table { width:100%; border-collapse:collapse; font-size:.9rem; }
+    th, td { text-align:left; padding:.5rem .6rem; border-bottom:1px solid #334155; }
+    th { color:var(--muted); font-weight:500; }
+    .badge { display:inline-block; padding:.15rem .5rem; border-radius:9999px; font-size:.75rem; font-weight:600; }
+    .info { background:rgba(56,189,248,.15); color:var(--accent); }
+    .warning { background:rgba(250,204,21,.15); color:var(--warn); }
+    .critical { background:rgba(248,113,113,.15); color:var(--crit); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:.8rem; }
+    .muted { color:var(--muted); }
+    footer { padding:1rem 2rem; color:var(--muted); font-size:.8rem; border-top:1px solid #334155; }
+    a { color:var(--accent); }
+    .empty { color:var(--muted); font-style:italic; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Arc Sentinel</h1>
+    <span>read-only USDC flow monitor &middot; Arc mainnet (chain {{ chain_id }})</span>
+    <span style="margin-left:auto"><a href="/api/v1/docs">API docs</a></span>
+  </header>
+  <main>
+    <section class="grid">
+      <div class="card">
+        <h2>Tracked agents</h2>
+        <div style="font-size:2rem; font-weight:700">{{ agents|length }}</div>
+      </div>
+      <div class="card">
+        <h2>Open alerts</h2>
+        <div style="font-size:2rem; font-weight:700">{{ open_alerts|length }}</div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-bottom:1.5rem">
+      <h2>Agents</h2>
+      {% if agents %}
+      <table>
+        <thead><tr><th>Name</th><th>Wallet</th><th>Framework</th><th>Owner</th><th>Active</th></tr></thead>
+        <tbody>
+        {% for a in agents %}
+          <tr>
+            <td>{{ a.name }}</td>
+            <td class="mono">{{ a.wallet_address }}</td>
+            <td>{{ a.framework or '—' }}</td>
+            <td>{{ a.owner_label or '—' }}</td>
+            <td>{{ '✓' if a.is_active else '✗' }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="empty">No agents tracked yet. POST /api/v1/agents with an X-API-Key to start monitoring.</p>
+      {% endif %}
+    </section>
+
+    <section class="card">
+      <h2>Open alerts</h2>
+      {% if open_alerts %}
+      <table>
+        <thead><tr><th>Severity</th><th>Type</th><th>Message</th><th>Time</th></tr></thead>
+        <tbody>
+        {% for al in open_alerts %}
+          <tr>
+            <td><span class="badge {{ al.severity }}">{{ al.severity }}</span></td>
+            <td class="mono">{{ al.alert_type }}</td>
+            <td>{{ al.message }}</td>
+            <td class="muted">{{ al.created_at.strftime('%Y-%m-%d %H:%M UTC') }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="empty">No open alerts. All agents are behaving within policy.</p>
+      {% endif %}
+    </section>
+  </main>
+  <footer>Arc Sentinel &middot; non-custodial &middot; public read-only dashboard</footer>
+</body>
+</html>

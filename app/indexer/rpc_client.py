@@ -187,6 +187,23 @@ class RpcClient:
         result = await self._call("eth_getLogs", [params])
         return list(result or [])
 
+    async def eth_call(self, *, to: str, data: str, block: str = "latest") -> str:
+        """Execute an eth_call (read-only) against the given contract."""
+        result = await self._call(
+            "eth_call", [{"to": to, "data": data}, block]
+        )
+        return str(result or "0x")
+
+    async def eth_get_balance(self, address: str, block: str = "latest") -> int:
+        """Return the native balance of *address* at *block* (wei, 18 dp)."""
+        result = await self._call("eth_getBalance", [address, block])
+        return _to_int(result)
+
+    async def eth_get_code(self, address: str, block: str = "latest") -> str:
+        """Return the deployed code at *address* ('' when it is an EOA)."""
+        result = await self._call("eth_getCode", [address, block])
+        return str(result or "0x")
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
