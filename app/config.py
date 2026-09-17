@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     )
     usdc_address: str = "0x3600000000000000000000000000000000000000"
 
+    # --- Rules runner (SPEC §20.6) ---------------------------------------
+    rules_run_interval_seconds: float = 60.0  # how often the rules loop re-evaluates
+
     # --- API ------------------------------------------------------------
     # SPEC §17: self-issued API keys are stored hashed in `api_keys` table
     # using this salt. Legacy API_KEY_HASH env remains for the preset key.

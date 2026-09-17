@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
+import logging
 import uuid
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -22,11 +25,42 @@ from app.config import get_settings
 from app.db.models import Agent, Alert, DailyAgentSummary, IndexerState, Transaction
 from app.db.session import get_session
 from app.indexer.rpc_client import RpcClient, RpcError
+from app.rules.runner import run_rules
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Start the rules-runner background loop and stop it on shutdown."""
+    task = asyncio.create_task(_rules_runner_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+async def _rules_runner_loop() -> None:
+    """Re-evaluate rules every ``rules_run_interval_seconds`` (SPEC §20.6).
+
+    Runs independently of the indexer; a failed cycle is logged and the loop
+    keeps going so one bad query never kills alert generation.
+    """
+    while True:
+        try:
+            await run_rules(database_url=get_settings().database_url)
+        except Exception:
+            logger.exception("rules runner cycle failed")
+        await asyncio.sleep(get_settings().rules_run_interval_seconds)
+
 
 app = FastAPI(
     title="Arc Sentinel",
     description="Non-custodial, read-only monitoring of Agent wallet USDC flows on Arc mainnet.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 api = APIRouter(prefix="/api/v1")

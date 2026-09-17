@@ -38,6 +38,15 @@ class Base(DeclarativeBase):
 TIMESTAMPTZ = DateTime(timezone=True)
 """TIMESTAMPTZ -- timezone-aware timestamp, mirrors ``now()`` semantics."""
 
+BIGINT_AUTOINCREMENT = BigInteger().with_variant(Integer, "sqlite")
+"""``BigInteger`` identity PK that degrades to ``INTEGER PRIMARY KEY`` on SQLite.
+
+PostgreSQL serialises it as ``BIGSERIAL`` exactly like a plain ``BigInteger``;
+SQLite only auto-increments the *exact* ``INTEGER`` type (``BIGINT PRIMARY KEY``
+is NOT a rowid alias), so the variant keeps in-memory/unit-test databases
+working without changing the production DDL.
+"""
+
 
 def _uuid_pk() -> Mapped[uuid.UUID]:
     """PostgreSQL-native UUID primary key defaulting to ``gen_random_uuid()``.
@@ -103,7 +112,7 @@ class TokenTransfer(Base):
         Index("idx_transfer_agent_time", "from_address", "to_address"),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BIGINT_AUTOINCREMENT, primary_key=True, autoincrement=True)
     tx_hash: Mapped[str] = mapped_column(ForeignKey("transactions.tx_hash"), nullable=False)
     log_index: Mapped[int] = mapped_column(Integer, nullable=False)
     token_address: Mapped[str] = mapped_column(Text, nullable=False)
@@ -135,7 +144,7 @@ class Budget(Base):
 class AddressPolicy(Base):
     __tablename__ = "address_policies"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BIGINT_AUTOINCREMENT, primary_key=True, autoincrement=True)
     agent_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("agents.id"), nullable=False)
     address: Mapped[str] = mapped_column(Text, nullable=False)
     list_type: Mapped[str] = mapped_column(Text, nullable=False)  # allow|block
@@ -147,7 +156,7 @@ class AddressPolicy(Base):
 class Alert(Base):
     __tablename__ = "alerts"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BIGINT_AUTOINCREMENT, primary_key=True, autoincrement=True)
     agent_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("agents.id"))
     tx_hash: Mapped[str | None] = mapped_column(ForeignKey("transactions.tx_hash"))
     alert_type: Mapped[str] = mapped_column(Text, nullable=False)
