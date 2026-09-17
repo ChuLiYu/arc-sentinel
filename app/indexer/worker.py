@@ -516,7 +516,7 @@ class IndexerWorker:
             transfers.append(transfer)
             if transfer.tx_hash not in parsed_hashes:
                 # e.g. relayer-mediated internal receive: the block scan missed it.
-                parsed.append(await self._parse_missing_tx(transfer.tx_hash, wallet_map))
+                parsed.append(await self._parse_missing_tx(transfer, wallet_map))
                 parsed_hashes.add(transfer.tx_hash)
 
         return parsed, transfers, skipped
@@ -608,23 +608,53 @@ class IndexerWorker:
         return unique
 
     async def _parse_missing_tx(
-        self, tx_hash: str, wallet_map: dict[str, uuid.UUID]
+        self, transfer: ParsedTransfer, wallet_map: dict[str, uuid.UUID]
     ) -> ParsedTx:
-        """Index a transaction referenced by a Transfer log but missed by scan."""
-        tx = await self._rpc.eth_get_transaction_by_hash(tx_hash)
+        """Index a transaction referenced by a Transfer log but missed by scan.
+
+        The transfer was already decoded from the log, so its ``from``/``to``
+        sides (not the raw transaction's) are the authoritative view of which
+        agent wallet the funds touched — a relayer may have submitted the tx,
+        making ``tx.from``/``tx.to`` no longer equal to the USDC sides (SPEC §4).
+        """
+        tx = await self._rpc.eth_get_transaction_by_hash(transfer.tx_hash)
         if tx is None:
-            raise RpcError(f"transaction {tx_hash} referenced by a log not found")
+            raise RpcError(f"transaction {transfer.tx_hash} referenced by a log not found")
         block_number = hex_to_int(tx.get("blockNumber"))
         if block_number is None:
-            raise RpcError(f"transaction {tx_hash} is pending; cannot index")
+            raise RpcError(f"transaction {transfer.tx_hash} is pending; cannot index")
         block = await self._rpc.eth_get_block_by_number(
             block_number, full_transactions=False
         )
         block_time = _block_time(
             hex_to_int(block.get("timestamp")) if block else None
         )
-        receipt = await self._rpc.eth_get_transaction_receipt(tx_hash)
-        return _parse_tx(tx, block_number, block_time, wallet_map, receipt)
+        receipt = await self._rpc.eth_get_transaction_receipt(transfer.tx_hash)
+
+        transfer_from = str(transfer.from_address).lower()
+        transfer_to = str(transfer.to_address).lower()
+        agent_id = wallet_map.get(transfer_from)
+        if agent_id is None:
+            agent_id = wallet_map.get(transfer_to)
+        direction: Direction = "outbound" if transfer_from in wallet_map else "inbound"
+
+        gas_used, fee_wei, fee_usdc = _compute_gas(receipt, tx)
+        input_hex = tx.get("input") or "0x"
+        return ParsedTx(
+            tx_hash=str(tx["hash"]),
+            block_number=block_number,
+            block_time=block_time,
+            from_address=str(tx.get("from") or ""),
+            to_address=str(tx.get("to") or "").lower() if tx.get("to") else None,
+            agent_id=agent_id,
+            direction=direction,
+            status=_status_from_receipt(receipt),
+            method_selector=_method_selector(input_hex),
+            gas_used=gas_used,
+            gas_fee_wei=fee_wei,
+            gas_fee_usdc=fee_usdc,
+            raw_input_head=_raw_input_head(input_hex),
+        )
 
 
 # ---------------------------------------------------------------------------

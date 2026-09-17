@@ -361,9 +361,10 @@ class TestIndexRangeMissingTxDedup:
         worker = IndexerWorker(
             session_factory=sessionmaker(), rpc=rpc, chain_id=1, usdc_address=TOKEN
         )
+        wallet_map = _wallet_map(WALLET)
 
         parsed, transfers, skipped = await worker._index_range(
-            from_block=100, to_block=100, wallet_map=_wallet_map(WALLET)
+            from_block=100, to_block=100, wallet_map=wallet_map
         )
 
         assert skipped == 0
@@ -371,3 +372,50 @@ class TestIndexRangeMissingTxDedup:
         assert len(parsed) == 1, "two Transfer logs of one tx must not duplicate the row"
         assert parsed[0].tx_hash == tx_hash
         assert parsed[0].direction == "inbound"
+        # Regression (SPEC §4): the agent is the log-side receiver; the relayer
+        # submitted the tx, so tx.from is NOT the agent. agent_id must still be
+        # resolved from the Transfer log, not from tx.from/tx.to.
+        assert parsed[0].agent_id is not None
+        assert parsed[0].agent_id == wallet_map[WALLET]
+
+    async def test_relayer_outbound_log_resolves_agent_and_direction(self) -> None:
+        tx_hash = "0x" + "98" * 32
+        # Agent's sends are submitted by a relayer: tx.from=OTHER, tx.to=TOKEN;
+        # the USDC log says from=WALLET(agent) -> OTHER. Must be indexed as
+        # outbound with the agent attached (this is how budget rules fire).
+        tx = {"hash": tx_hash, "from": OTHER, "to": TOKEN, "input": "0x", "blockNumber": "0x64"}
+        block = {
+            "number": "0x64",
+            "timestamp": "0x655e3c00",
+            "transactions": [],
+        }
+        log = {
+            "address": TOKEN,
+            "topics": [TRANSFER_EVENT_SIG, _topic(WALLET), _topic(OTHER)],
+            "data": _word(500),
+            "transactionHash": tx_hash,
+            "logIndex": "0x0",
+        }
+        rpc = _StubRpc(
+            block=block,
+            txs={tx_hash: tx},
+            receipts={tx_hash: _receipt()},
+            logs=[log],
+        )
+        worker = IndexerWorker(
+            session_factory=sessionmaker(), rpc=rpc, chain_id=1, usdc_address=TOKEN
+        )
+        wallet_map = _wallet_map(WALLET)
+
+        parsed, transfers, skipped = await worker._index_range(
+            from_block=100, to_block=100, wallet_map=wallet_map
+        )
+
+        assert skipped == 0
+        assert len(parsed) == 1
+        assert parsed[0].tx_hash == tx_hash
+        assert parsed[0].direction == "outbound"
+        assert parsed[0].agent_id == wallet_map[WALLET]
+        # tx-level sides still reflect the on-chain submitter, not the USDC sides
+        assert parsed[0].from_address == OTHER
+        assert parsed[0].to_address == TOKEN

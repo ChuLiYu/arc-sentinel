@@ -57,7 +57,8 @@ class Settings(BaseSettings):
     rpc_backoff_base_seconds: float = 1.0  # delays: 1s → 2s → 4s → … capped
     rpc_backoff_max_seconds: float = 30.0
     rpc_max_consecutive_failures: int = 5  # → internal_rpc_down alert (§13)
-    rpc_logs_max_range_size: int = 2000  # eth_getLogs chunk width (blocks)
+    # Alchemy Free tier caps eth_getLogs block range at 10; use a small chunk.
+    rpc_logs_max_range_size: int = 10  # eth_getLogs chunk width (blocks)
     usdc_address: str = "0x3600000000000000000000000000000000000000"
 
     # --- API ------------------------------------------------------------
