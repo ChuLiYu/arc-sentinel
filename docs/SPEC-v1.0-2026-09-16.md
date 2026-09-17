@@ -14,6 +14,7 @@
    - Alchemy 主網 RPC：`https://arc-mainnet.g.alchemy.com/v2/YOUR_API_KEY`（WebSocket：`wss://arc-mainnet.g.alchemy.com/v2/YOUR_API_KEY`）
    - dRPC 主網 RPC（備援）：`https://rpc.drpc.mainnet.arc.io`
    - 這一步需要人類註冊 Alchemy 帳號並產生金鑰，Agent 不能代為完成，必須在 Day 1 提示使用者去申請，並將金鑰以環境變數方式提供給服務（詳見 §17 憑證總表）。
+3. **【已更新 2026-09-16】【主網實戰教訓】** 用主網真實活躍錢包跑過一次端對端後發現兩件「測試網測不出來」的事：(a) Alchemy **Free tier** 的 `eth_getLogs` 最多只能查 10 個 block，且高頻查詢會吃 Compute Units（429），因此 RPC client 的 log 抓取要**小區塊切割**（預設 10）並靠 dRPC fallback 吸收尖峰；(b) 很多主網活躍錢包的 USDC 是由 **relayer 代提交**的，`tx.from/tx.to` 根本不含 agent 錢包，必須用 **Transfer log 的 from/to** 判定 agent 與方向（已修，見 §20.1/§20.2）。主網驗證務必挑「真的會動的地址」，單靠測試網綠燈不代表主網沒問題。
 
 ---
 
@@ -547,3 +548,52 @@ SSH 私鑰、DB 密碼、RPC API Key 一律放 GitHub Actions Secrets，絕不�
 - Circle Developers：`developers.circle.com/agent-stack`、`agent-stack/agent-wallets`（Agent Wallet 的 2-of-2 MPC、spending policy CLI 語法）
 - 使用者先前對話中已查證之 Arc Microgrants 官方申請規則（500 USDC/專案、20 個名額、10/14 23:59 ET 截止、滾動審查）
 - Arc Microgrants 收件平台 DoraHacks（`dorahacks.io/hackathon/arc-microgrants/detail`）及其通用評審框架說明（`dorahacks.io/blog/guides/judging-organizers`）
+
+## 20. 開發實戰遇到的問題與解法（累積紀錄，持續更新）
+
+> 這是開發/驗證過程中實際踩過的坑與對應解法，目的在讓未來的執行 Agent（或接手的人）不要重蹈覆轍。每一條都記錄：現象 → 根因 → 解法 → 驗證。
+
+### 20.1 Alchemy Free tier 限制（2026-09-16 主網驗證時發現）
+
+| 項目 | 限制 | 應對 |
+|---|---|---|
+| `eth_getLogs` block range | **最多 10 個 block**，超過回 `-32600` | 預設 `rpc_logs_max_range_size` 由 2000 改為 **10**（`app/config.py`）；環境變數 `RPC_LOGS_MAX_RANGE_SIZE` 可調 |
+| Compute Units / 秒 | 高頻 polling（2-3s）+ 高吞吐 agent 錢包會 **429（CU/s 超限）** | RPC client 已有 retry + dRPC fallback（`ARC_MAINNET_RPC_FALLBACK_URL`）；本機測試期間 Alchemy↔dRPC 自動切換運作正常。正式環境建議維持 `POLL_INTERVAL_SECONDS=3.0` 並靠 fallback 吸收尖峰 |
+
+**結論**：部署用 Alchemy Free tier 是可行但吃緊的，遇 429 是預期內（failover 設計就是為此），不是 bug。
+
+### 20.2 Relayer-mediated 交易的 agent 歸屬 bug（2026-09-16 主網端對端測試抓到，commit `fab9de4` 修復）
+
+**現象**：主網選的測試 agent 錢包（`0x8366...`，一個經 relayer 提交 USDC 的活躍錢包）全部交易被索引成 `agent_id=NULL` 且 `direction='inbound'`。
+
+**根因**：Agent 的 USDC 是由 **relayer 代提交**的（`tx.from/tx.to` 是 relayer，不是 agent 錢包）。Block scan 永遠抓不到這類交易，全數由「Transfer log 補抓」路徑（`_parse_missing_tx`）進來——而舊實作用 `tx.from/tx.to` 判定 agent/direction，於是全部解析失敗。
+
+**修法**：`_parse_missing_tx` 改吃已解碼的 `ParsedTransfer`，用 **Transfer log 的 from/to**（才是資金真正觸及的帳戶）判定 `agent_id` 與 `direction`；`tx` 層的 `from/to` 仍保留鏈上提交者原樣。加回歸測試（inbound relayer 補 agent_id 斷言 + 新增 outbound relayer case）。
+
+**驗證**：修正後主網重跑，194 筆交易全數 `agent_id` 正確、`inbound=97/outbound=97`、agent 當 sender 的交易 167 筆全標 `outbound`（修正前為 0）。
+
+**經驗教訓**：主網活躍地址很多是 relayer-driven；**測試網驗證通過不代表主網沒問題**，一定要用主網真實活躍錢包跑一次端對端。
+
+### 20.3 官方 RPC 端點擋某些 HTTP User-Agent（2026-09-16 testnet 探測時發現）
+
+**現象**：用 `urllib`（預設 UA `Python-urllib/...`）打 `rpc.testnet.arc.io` / `rpc.drpc.testnet.arc.io` 回 **403**，同一請求用 `curl` 或 `httpx` 則 200。
+
+**根因**：provider 有 UA 過濾，擋掉常見程式庫預設 UA。
+
+**應對**：正式程式（worker / rpc_client）用 httpx 不受影響；**探測腳本一律用 curl 或明確設定 UA**，不要用 urllib 裸請求。
+
+### 20.4 `.env` 的 `API_KEY_HASH` 是「sha256 hex」不是明文（2026-09-16）
+
+**現象**：使用者把明文 X-API-Key 填進 `API_KEY_HASH=`，寫入端點全部 403。
+
+**根因**：`deps.py` legacy 認證路徑用 `hmac.compare_digest(_hash_api_key(key), api_key_hash)`，期望 64 字元 sha256 hex；放明文永遠比對失敗。
+
+**應對**：`KEY=$(openssl rand -hex 24); printf '%s' "$KEY" | sha256sum` 產生 hash 填入 `.env`；明文 key 由使用者保管，送請求時放 `X-API-Key` header。正規多-key 路徑走 `SENTINEL_API_KEY_SALT` + `api_keys` 表（§17）。
+
+### 20.5 Dashboard 路由是 `/api/v1/dashboard` 不是 `/`（2026-09-16）
+
+**現象**：`curl /` 拿到 index.html，`curl /dashboard` 是 404。
+
+**根因**：dashboard route 註冊在 `api = APIRouter(prefix="/api/v1")` 底下。
+
+**應對**：Dashboard 完整路徑為 `/api/v1/dashboard`（`/` 只會拿到入口 index.html）。
