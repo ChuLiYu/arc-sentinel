@@ -605,3 +605,17 @@ SSH 私鑰、DB 密碼、RPC API Key 一律放 GitHub Actions Secrets，絕不�
 **根因**：SPEC §9 只定義了規則的「純函式」形態，但**沒有定義誰在何時呼叫它們**。Indexer Worker 只做索引（寫 transactions/transfers），FastAPI 只做讀取，兩者都不呼叫 `app/rules/`。
 
 **應對（待辦）**：需在規格補一個執行點，例如：Worker 每個 index cycle 結束後跑一次 `check_budget`（對昨日/今日 outbound 彙總），或獨立的排程 runner（頂多每 60s 跑一次即可，因為規則只對「已索引週期」的資料運算、成本極低）。這是 MVP 完成前必須補上的缺件，否則核心「監控告警」價值沒有落地。
+
+### 20.7 RPC client 對 429 風暴無韌性 → 過夜 b' 停擺（2026-09-17 過夜測試抓到，未修）
+
+**現象**：主網 indexer 過夜跑 12 小時，前 17 分鐘正常（索引至 head-2），然後因 Alchemy Free tier 429 風暴停擺：57,162 次 429、primary↔fallback 乒乓切換 1,318 次、連續失敗計數器觸發 `provider(s) down`，worker 進入「重試→失敗→宣告 down→循環」死迴圈，整夜零進度，lag 累積到 87,075 個區塊。
+
+**根因**：
+1. **backoff 對 429 太短**：429 是「可恢復的 rate limit」，但 backoff 上限只有 30s（`DEFAULT_BACKOFF_MAX`），Free tier 的 CU 每秒配額恢復需要更久；短重試 = 送更多請求 = 更 429，惡性循環。
+2. **429 與永久錯誤同等計入 `consecutive_failures`**：每 5 次連續失敗就 failover（甚至宣告 down），但 429 下「連續 5 次」一下就到；切到 fallback 後 probe primary 一成功就切回，立刻又 429 → 乒乓。
+3. **回補高峰打爆 quota**：00:03 一次補 3411 tx（catch-up 大批量）吃掉整個 CU 預算，後續所有請求都被限流。
+
+**應對（待辦）**：
+- 429 應視為**需要指數 backoff 的暫時限流**，不計入 provider down 判定（或至少加大閾值）；fallback 切換後要有「最小停留時間」避免乒乓。
+- catch-up 回補要限速（例如限制單次 index cycle 的最大區塊數，分批處理）。
+- 這對 Free tier 部署是**必要韌性**，否則活躍錢包會把服務卡死；修完要重新跑一次過夜觀察。
