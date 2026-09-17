@@ -597,3 +597,11 @@ SSH 私鑰、DB 密碼、RPC API Key 一律放 GitHub Actions Secrets，絕不�
 **根因**：dashboard route 註冊在 `api = APIRouter(prefix="/api/v1")` 底下。
 
 **應對**：Dashboard 完整路徑為 `/api/v1/dashboard`（`/` 只會拿到入口 index.html）。
+
+### 20.6 規則引擎沒有執行者（2026-09-16 過夜 b' 檢查發現，未修）
+
+**現象**：alerts 表永遠為空；dashboard 的「Open alerts」卡永遠 0。check_budget 等純函式只在測試與手動腳本中被呼叫。
+
+**根因**：SPEC §9 只定義了規則的「純函式」形態，但**沒有定義誰在何時呼叫它們**。Indexer Worker 只做索引（寫 transactions/transfers），FastAPI 只做讀取，兩者都不呼叫 `app/rules/`。
+
+**應對（待辦）**：需在規格補一個執行點，例如：Worker 每個 index cycle 結束後跑一次 `check_budget`（對昨日/今日 outbound 彙總），或獨立的排程 runner（頂多每 60s 跑一次即可，因為規則只對「已索引週期」的資料運算、成本極低）。這是 MVP 完成前必須補上的缺件，否則核心「監控告警」價值沒有落地。
