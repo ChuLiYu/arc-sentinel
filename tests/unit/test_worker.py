@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy.orm import sessionmaker
 
 from app.indexer.decode import TRANSFER_EVENT_SIG, DecodeError
+from app.indexer.rpc_client import RpcError
 from app.indexer.worker import (
     IndexerWorker,
     ParsedTransfer,
@@ -105,7 +106,7 @@ class TestParseTx:
     def test_inbound_to_wallet(self) -> None:
         wallet_map = _wallet_map(WALLET)
         parsed = _parse_tx(
-            _tx(sender=OTHER, to=WALLET, input_hex="0x"), 101, BLOCK_TS, wallet_map, None
+            _tx(sender=OTHER, to=WALLET, input_hex="0x"), 101, BLOCK_TS, wallet_map, _receipt()
         )
         assert parsed.direction == "inbound"
         assert parsed.agent_id == wallet_map[WALLET]
@@ -115,15 +116,12 @@ class TestParseTx:
         parsed = _parse_tx(_tx(), 101, BLOCK_TS, _wallet_map(WALLET), _receipt(status="0x0"))
         assert parsed.status == "failed"
 
-    def test_no_receipt_defaults_success_without_gas(self) -> None:
-        parsed = _parse_tx(_tx(), 101, BLOCK_TS, _wallet_map(WALLET), None)
-        assert parsed.status == "success"
-        assert parsed.gas_used is None
-        assert parsed.gas_fee_wei is None
-        assert parsed.gas_fee_usdc is None
+    def test_no_receipt_refuses_to_invent_success(self) -> None:
+        with pytest.raises(RpcError, match="missing transaction receipt"):
+            _parse_tx(_tx(), 101, BLOCK_TS, _wallet_map(WALLET), None)
 
     def test_to_address_none_for_contract_creation(self) -> None:
-        parsed = _parse_tx(_tx(to=None), 101, BLOCK_TS, _wallet_map(WALLET), None)
+        parsed = _parse_tx(_tx(to=None), 101, BLOCK_TS, _wallet_map(WALLET), _receipt())
         assert parsed.to_address is None
         assert parsed.raw_input_head is not None  # creation input is still stored
 
@@ -301,11 +299,13 @@ class TestHelpers:
         assert _block_time(None).tzinfo is UTC
 
     def test_status_from_receipt(self) -> None:
-        assert _status_from_receipt(None) == "success"
+        with pytest.raises(RpcError):
+            _status_from_receipt(None)
         assert _status_from_receipt({"status": "0x1"}) == "success"
         assert _status_from_receipt({"status": 1}) == "success"
         assert _status_from_receipt({"status": "0x0"}) == "failed"
-        assert _status_from_receipt({}) == "failed"
+        with pytest.raises(RpcError):
+            _status_from_receipt({})
 
 
 # ---------------------------------------------------------------------------
@@ -363,11 +363,10 @@ class TestIndexRangeMissingTxDedup:
         )
         wallet_map = _wallet_map(WALLET)
 
-        parsed, transfers, skipped = await worker._index_range(
+        parsed, transfers = await worker._index_range(
             from_block=100, to_block=100, wallet_map=wallet_map
         )
 
-        assert skipped == 0
         assert len(transfers) == 2
         assert len(parsed) == 1, "two Transfer logs of one tx must not duplicate the row"
         assert parsed[0].tx_hash == tx_hash
@@ -407,11 +406,10 @@ class TestIndexRangeMissingTxDedup:
         )
         wallet_map = _wallet_map(WALLET)
 
-        parsed, transfers, skipped = await worker._index_range(
+        parsed, transfers = await worker._index_range(
             from_block=100, to_block=100, wallet_map=wallet_map
         )
 
-        assert skipped == 0
         assert len(parsed) == 1
         assert parsed[0].tx_hash == tx_hash
         assert parsed[0].direction == "outbound"
@@ -429,6 +427,9 @@ class _HeadOnlyRpc:
 
     def __init__(self, head: int) -> None:
         self._head = head
+
+    async def eth_chain_id(self) -> int:
+        return 1
 
     async def eth_block_number(self) -> int:
         return self._head
@@ -462,6 +463,9 @@ class _FakeSession:
 
     def scalars(self, statement: object) -> _EmptyScalars:
         return _EmptyScalars()
+
+    def scalar(self, statement, params=None):
+        return True  # This DB-free fixture owns the advisory lock.
 
     def commit(self) -> None:
         self.committed = True
@@ -512,3 +516,31 @@ class TestPollOnceCatchUpBatchCap:
         assert result.to_block == 500  # min(500, 491 + 80 - 1)
         assert result.last_indexed_block == 500
         assert written == [500]
+
+
+@pytest.mark.parametrize("change", [
+    {"logIndex": None}, {"logIndex": "-0x1"},
+    {"transactionHash": ""}, {"removed": True},
+])
+def test_transfer_identity_must_be_present_and_not_removed(change):
+    log = {
+        "address": TOKEN, "transactionHash": "0x" + "11" * 32, "logIndex": "0x0",
+        "topics": [TRANSFER_EVENT_SIG, _topic(WALLET), _topic(OTHER)], "data": _word(1),
+    }
+    log.update(change)
+    with pytest.raises(DecodeError):
+        _decode_log(log, TOKEN)
+
+
+@pytest.mark.parametrize("block", [
+    None, {}, {"number": "0x65", "timestamp": "0x1", "transactions": []},
+    {"number": "0x64", "timestamp": "0x1"},
+    {"number": "0x64", "transactions": []},
+])
+async def test_missing_or_wrong_block_cannot_be_treated_as_empty(block):
+    rpc = _StubRpc(block=block, txs={}, receipts={}, logs=[])
+    worker = IndexerWorker(
+        session_factory=sessionmaker(), rpc=rpc, chain_id=1, usdc_address=TOKEN
+    )
+    with pytest.raises(RpcError, match="block 100"):
+        await worker._fetch_blocks(100, 100)

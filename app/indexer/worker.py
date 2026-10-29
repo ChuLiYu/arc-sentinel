@@ -50,7 +50,7 @@ from app.indexer.decode import (
     wei_to_eth,
 )
 from app.indexer.rpc_client import RpcClient, RpcError, RpcProviderDown
-from app.indexer.state import get_last_indexed_block, set_last_indexed_block
+from app.indexer.state import get_last_indexed_block, set_last_indexed_block, try_indexer_lock
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,10 @@ BLOCK_FETCH_CONCURRENCY = 8
 
 Direction = Literal["outbound", "inbound"]
 Status = Literal["success", "failed"]
+
+
+class IndexerBusyError(RuntimeError):
+    """Another worker owns this chain's indexing transaction."""
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +140,7 @@ class PollResult:
     to_block: int | None
     transactions_inserted: int
     transfers_inserted: int
-    last_indexed_block: int
+    last_indexed_block: int | None
 
 
 # ---------------------------------------------------------------------------
@@ -227,11 +231,13 @@ def _compute_gas(
 
 def _status_from_receipt(receipt: dict[str, Any] | None) -> Status:
     if receipt is None:
-        return "success"
+        raise RpcError("missing transaction receipt; refusing to advance checkpoint")
     status = receipt.get("status")
     if status in ("0x1", "1", 1):
         return "success"
-    return "failed"
+    if status in ("0x0", "0", 0):
+        return "failed"
+    raise RpcError("missing or invalid receipt status; refusing to advance checkpoint")
 
 
 def _parse_tx(
@@ -274,10 +280,15 @@ def _decode_log(log: dict[str, Any], usdc_address: str) -> ParsedTransfer | None
     token_address = str(log.get("address") or "").lower()
     if token_address != usdc_address.lower():
         return None
+    if log.get("removed"):
+        raise DecodeError("removed log cannot be committed as canonical")
+    log_index = hex_to_int(log["logIndex"])
+    if log_index is None or log_index < 0 or not log.get("transactionHash"):
+        raise DecodeError("missing transaction hash or invalid log index")
     decoded = decode_transfer_log(log["topics"], str(log.get("data") or ""))
     return ParsedTransfer(
         tx_hash=str(log["transactionHash"]),
-        log_index=hex_to_int(log.get("logIndex")) or 0,
+        log_index=log_index,
         token_address=token_address,
         from_address=decoded.from_address,
         to_address=decoded.to_address,
@@ -324,7 +335,14 @@ class IndexerWorker:
         poll_interval_seconds: float = 3.0,
         logs_max_range_size: int = 2000,
         max_blocks_per_cycle: int = 80,
+        start_block: int | None = None,
     ) -> None:
+        if not 1 <= chain_id <= 2**31 - 1:
+            raise ValueError("chain_id must fit the positive PostgreSQL INTEGER range")
+        if confirmations < 0 or (start_block is not None and start_block < 0):
+            raise ValueError("confirmations and start_block must be nonnegative")
+        if min(logs_max_range_size, max_blocks_per_cycle, poll_interval_seconds) <= 0:
+            raise ValueError("batch sizes and poll interval must be positive")
         self._factory = session_factory
         self._rpc = rpc
         self._chain_id = chain_id
@@ -333,6 +351,7 @@ class IndexerWorker:
         self._poll_interval_seconds = poll_interval_seconds
         self._logs_max_range_size = logs_max_range_size
         self._max_blocks_per_cycle = max_blocks_per_cycle
+        self._start_block = start_block
 
     @classmethod
     def from_settings(
@@ -350,6 +369,7 @@ class IndexerWorker:
             poll_interval_seconds=settings.poll_interval_seconds,
             logs_max_range_size=settings.rpc_logs_max_range_size,
             max_blocks_per_cycle=settings.max_blocks_per_cycle,
+            start_block=settings.start_block,
         )
 
     # ------------------------------------------------------------------
@@ -379,6 +399,8 @@ class IndexerWorker:
                     logger.debug(
                         "up to date at block %s (head %s)", result.safe_head, result.head
                     )
+            except IndexerBusyError:
+                logger.info("indexer cycle deferred: another writer owns chain %s", self._chain_id)
             except RpcProviderDown as exc:
                 # The recognizable hook for the internal_rpc_down alert (§13).
                 logger.error("internal_rpc_down: %s", exc)
@@ -402,13 +424,20 @@ class IndexerWorker:
         (SPEC §20.7); a backlog larger than that is caught up over several
         cycles instead of hammering the provider in one backfill.
         """
+        actual_chain_id = await self._rpc.eth_chain_id()
+        if actual_chain_id != self._chain_id:
+            raise RpcError(
+                f"RPC chain mismatch: expected {self._chain_id}, received {actual_chain_id}"
+            )
         head = await self._rpc.eth_block_number()
         safe_head = max(0, head - self._confirmations)
 
         with self._factory() as session:
+            if not try_indexer_lock(session, self._chain_id):
+                raise IndexerBusyError("another indexer owns this chain")
             last = get_last_indexed_block(session, self._chain_id)
 
-            if last is None:  # first run: start at the current safe head
+            if last is None and self._start_block is None:
                 set_last_indexed_block(session, self._chain_id, safe_head)
                 session.commit()
                 return PollResult(
@@ -422,6 +451,11 @@ class IndexerWorker:
                     last_indexed_block=safe_head,
                 )
 
+            checkpoint = last
+            if last is None:
+                # -1 is an in-memory sentinel, never persisted. START_BLOCK=0
+                # includes genesis; a future start must not skip unseen blocks.
+                last = self._start_block - 1
             from_block = last + 1
             if from_block > safe_head:  # already up to date
                 return PollResult(
@@ -432,7 +466,7 @@ class IndexerWorker:
                     to_block=None,
                     transactions_inserted=0,
                     transfers_inserted=0,
-                    last_indexed_block=last,
+                    last_indexed_block=checkpoint,
                 )
 
             # Catch-up batching (SPEC §20.7): index at most
@@ -450,13 +484,11 @@ class IndexerWorker:
             tx_rows: list[dict[str, Any]] = []
             transfer_rows: list[dict[str, Any]] = []
             if wallet_map:
-                parsed_txs, parsed_transfers, skipped = await self._index_range(
+                parsed_txs, parsed_transfers = await self._index_range(
                     from_block=from_block,
                     to_block=to_block,
                     wallet_map=wallet_map,
                 )
-                if skipped:
-                    logger.warning("skipped %d undecodable Transfer logs", skipped)
                 tx_rows = [tx.to_row() for tx in parsed_txs]
                 transfer_rows = [t.to_row() for t in parsed_transfers]
 
@@ -500,7 +532,7 @@ class IndexerWorker:
         from_block: int,
         to_block: int,
         wallet_map: dict[str, uuid.UUID],
-    ) -> tuple[list[ParsedTx], list[ParsedTransfer], int]:
+    ) -> tuple[list[ParsedTx], list[ParsedTransfer]]:
         """Scan a block range + logs; return parsed rows (no DB writes)."""
         blocks = await self._fetch_blocks(from_block, to_block)
 
@@ -521,14 +553,11 @@ class IndexerWorker:
         logs = await self._fetch_transfers(from_block, to_block, wallet_map)
         parsed_hashes = {tx.tx_hash for tx in parsed}
         transfers: list[ParsedTransfer] = []
-        skipped = 0
         for log in logs:
             try:
                 transfer = _decode_log(log, self._usdc_address)
-            except DecodeError as exc:
-                skipped += 1
-                logger.warning("undecodable Transfer log %s: %s", log.get("transactionHash"), exc)
-                continue
+            except (DecodeError, KeyError, ValueError, TypeError) as exc:
+                raise RpcError("undecodable Transfer log; batch must be retried") from exc
             if transfer is None:
                 continue
             transfers.append(transfer)
@@ -537,7 +566,7 @@ class IndexerWorker:
                 parsed.append(await self._parse_missing_tx(transfer, wallet_map))
                 parsed_hashes.add(transfer.tx_hash)
 
-        return parsed, transfers, skipped
+        return parsed, transfers
 
     async def _fetch_blocks(
         self, from_block: int, to_block: int
@@ -549,7 +578,16 @@ class IndexerWorker:
                 block = await self._rpc.eth_get_block_by_number(
                     number, full_transactions=True
                 )
-                return block or {}
+                if (
+                    not block
+                    or hex_to_int(block.get("number")) != number
+                    or block.get("timestamp") is None
+                    or not isinstance(block.get("transactions"), list)
+                ):
+                    raise RpcError(
+                        f"incomplete or mismatched block {number}; batch must be retried"
+                    )
+                return block
 
         results = await asyncio.gather(
             *(fetch(n) for n in range(from_block, to_block + 1))
@@ -644,10 +682,15 @@ class IndexerWorker:
         block = await self._rpc.eth_get_block_by_number(
             block_number, full_transactions=False
         )
-        block_time = _block_time(
-            hex_to_int(block.get("timestamp")) if block else None
-        )
+        if (
+            not block
+            or hex_to_int(block.get("number")) != block_number
+            or block.get("timestamp") is None
+        ):
+            raise RpcError(f"missing or mismatched block for transaction {transfer.tx_hash}")
+        block_time = _block_time(hex_to_int(block["timestamp"]))
         receipt = await self._rpc.eth_get_transaction_receipt(transfer.tx_hash)
+        _status_from_receipt(receipt)  # Missing receipts must never be assumed successful.
 
         transfer_from = str(transfer.from_address).lower()
         transfer_to = str(transfer.to_address).lower()

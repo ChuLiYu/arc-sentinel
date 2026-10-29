@@ -226,6 +226,10 @@ class RpcClient:
     # ------------------------------------------------------------------
     # Public RPC calls
     # ------------------------------------------------------------------
+    async def eth_chain_id(self) -> int:
+        """Return the provider's chain ID, including after failover."""
+        return _to_int(await self._call("eth_chainId", []))
+
     async def eth_block_number(self) -> int:
         """Return the current head block number as an int."""
         result = await self._call("eth_blockNumber", [])
@@ -268,7 +272,9 @@ class RpcClient:
         if topics:
             params["topics"] = list(topics)
         result = await self._call("eth_getLogs", [params])
-        return list(result or [])
+        if not isinstance(result, list) or any(not isinstance(log, dict) for log in result):
+            raise RpcTransportError("eth_getLogs: expected an array of log objects")
+        return result
 
     async def eth_call(self, *, to: str, data: str, block: str = "latest") -> str:
         """Execute an eth_call (read-only) against the given contract."""

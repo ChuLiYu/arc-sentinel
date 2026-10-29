@@ -114,8 +114,10 @@ def _rpc_handler(head_state: dict[str, int]):
         method = payload["method"]
         params = payload["params"]
 
-        if method == "eth_blockNumber":
-            result: Any = hex(head_state["head"])
+        if method == "eth_chainId":
+            result: Any = hex(CHAIN_ID)
+        elif method == "eth_blockNumber":
+            result = hex(head_state["head"])
         elif method == "eth_getBlockByNumber":
             number = int(params[0], 16)
             result = BLOCK_101 if number == BLOCK_WITH_TXS else _block(number, [])

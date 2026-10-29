@@ -559,3 +559,23 @@ async def test_fallback_stay_extends_after_rate_limit_storm(url: str):
         assert c.active_url == url
     finally:
         await c.close()
+
+
+@pytest.mark.parametrize("result", [None, {}, [None], ["invalid"]])
+@respx.mock
+async def test_get_logs_rejects_incomplete_provider_response(url, result):
+    respx.post(url).mock(return_value=httpx.Response(
+        200, json={"jsonrpc": "2.0", "id": 1, "result": result}
+    ))
+    async with RpcClient(url=url, max_retries=0) as client:
+        with pytest.raises(RpcTransportError, match="array of log objects"):
+            await client.eth_get_logs(from_block=1, to_block=2)
+
+
+@respx.mock
+async def test_chain_id_uses_rpc_response(url):
+    respx.post(url).mock(return_value=httpx.Response(
+        200, json={"jsonrpc": "2.0", "id": 1, "result": "0x89"}
+    ))
+    async with RpcClient(url=url, max_retries=0) as client:
+        assert await client.eth_chain_id() == 137

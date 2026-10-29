@@ -1,8 +1,7 @@
 name: Health Check
 
 # Scheduled liveness probe against the public /health endpoint.
-# Writes an Alertmanager-style failure if the service is unreachable
-# for 3 consecutive runs (kept simple: fail the job, GitHub notifies).
+# A failed/degraded probe fails this run. There is no cross-run failure counter.
 on:
   schedule:
     - cron: "*/5 * * * *" # every 5 minutes (SPEC §12)
@@ -20,6 +19,6 @@ jobs:
             echo "::error::health endpoint unreachable"
             exit 1
           fi
-          echo "$body" | jq -e '.status == "ok" or .status == "degraded"' >/dev/null \
+          echo "$body" | jq -e '.status == "ok"' >/dev/null \
             || { echo "::error::unexpected health payload: $body"; exit 1; }
           echo "health ok: $body"

@@ -1,63 +1,82 @@
-name: Deploy
+name: Deploy pilot (manual)
 
-# Triggered manually (or on push to main once human provides OCI details).
-# Secrets consumed (SPEC §17 credentials map):
-#   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_PRIVATE_KEY — SSH into VM
-#   ARC_MAINNET_RPC_URL — Alchemy mainnet RPC (written into VM .env)
-#   ARC_MAINNET_RPC_FALLBACK_URL — dRPC mainnet fallback (Phase 2.5)
-#   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB — DB credentials
-#   SENTINEL_API_KEY_SALT — hash salt for write-scope API keys
-#   vars.ARC_SENTINEL_DOMAIN — public domain for Caddy TLS
+# Enable only after the launch gates in docs/ROADMAP.md. No push deployment.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: ["docker-compose.yml", "docker-compose.prod.yml", ".github/workflows/deploy.yml"]
+    inputs:
+      revision:
+        description: Full tested commit SHA (image tag and configuration revision)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pilot-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    if: vars.DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    environment: pilot
     runs-on: ubuntu-latest
-    if: vars.ARC_SENTINEL_DOMAIN != '' && secrets.DEPLOY_HOST != ''
+    env:
+      HOST: ${{ secrets.DEPLOY_HOST }}
+      USER: ${{ secrets.DEPLOY_USER }}
+      SSH_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+      KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      REVISION: ${{ inputs.revision }}
+      DOMAIN: ${{ vars.ARC_SENTINEL_DOMAIN }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install SSH key
+      - name: Validate inputs and pin SSH host identity
         run: |
-          mkdir -p ~/.ssh
-          printf '%s' "${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$HOST" =~ ^[a-zA-Z0-9.-]+$ ]]
+          [[ "$USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$DOMAIN" =~ ^[a-zA-Z0-9.-]+$ ]]
+          test -n "$SSH_KEY"
+          test -n "$KNOWN_HOSTS"
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
 
-      - name: Render production .env and restart stack on VM
-        env:
-          HOST: ${{ secrets.DEPLOY_HOST }}
-          USER: ${{ secrets.DEPLOY_USER }}
-          RPC_URL: ${{ secrets.ARC_MAINNET_RPC_URL }}
-          RPC_FALLBACK: ${{ secrets.ARC_MAINNET_RPC_FALLBACK_URL }}
-          CHAIN_ID: "5042"
-          PG_USER: ${{ secrets.POSTGRES_USER }}
-          PG_PASS: ${{ secrets.POSTGRES_PASSWORD }}
-          PG_DB: ${{ secrets.POSTGRES_DB }}
-          API_KEY_SALT: ${{ secrets.SENTINEL_API_KEY_SALT }}
+      - name: Deploy tested revision using pre-provisioned host configuration
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${USER}@${HOST} '
-            set -e
-            cd ~/arc-sentinel
-            git pull --ff-only
-            # CI/CD is the source of truth for production secrets (SPEC §17):
-            cat > .env <<EOF
-            DATABASE_URL=postgresql+psycopg://'$PG_USER':'$PG_PASS'@localhost:5432/'$PG_DB'
-            ARC_MAINNET_RPC_URL='$RPC_URL'
-            ARC_MAINNET_RPC_FALLBACK_URL='$RPC_FALLBACK'
-            CHAIN_ID='$CHAIN_ID'
-            POSTGRES_USER='$PG_USER'
-            POSTGRES_PASSWORD='$PG_PASS'
-            POSTGRES_DB='$PG_DB'
-            SENTINEL_API_KEY_SALT='$API_KEY_SALT'
-            EOF
-            chmod 600 .env
-            docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d
-          '
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$REVISION"
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$USER@$HOST" bash -s -- "$REVISION" "$image" <<'REMOTE'
+          set -euo pipefail
+          revision="$1"
+          export SENTINEL_IMAGE="$2"
+          cd ~/arc-sentinel
+          test -f .env.production
+          git fetch origin main
+          git merge-base --is-ancestor "$revision" origin/main
+          git checkout --detach "$revision"
+          compose() { docker compose --env-file .env.production -f docker-compose.prod.yml "$@"; }
+          compose config --quiet
+          compose pull
+          compose up -d --wait postgres
+          compose stop api indexer
+          compose run --rm --no-deps api python -m alembic upgrade head
+          compose up -d
+          REMOTE
 
-      - name: Smoke check
-        run: curl -fsS --max-time 30 "https://${{ vars.ARC_SENTINEL_DOMAIN }}/api/v1/health"
+      - name: Check service health
+        run: |
+          set -euo pipefail
+          for attempt in {1..12}; do
+            if curl -fsS --max-time 15 "https://$DOMAIN/api/v1/health" | jq -e '.status == "ok"'; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
+
+      - name: Remove runner SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
