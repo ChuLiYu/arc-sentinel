@@ -1,5 +1,7 @@
 # Architecture decisions and failure semantics
 
+[Project map](INDEX.md)
+
 ## ADR 001: retain Python indexing; add TypeScript at the orchestration boundary
 
 The current FastAPI/PostgreSQL indexer already has tested decoding and rule logic. A rewrite would spend effort without proving new reliability properties. The proposed TypeScript service owns future cross-chain event correlation/workflow orchestration; it does not exist yet. Versioned chain-scoped events and an inbox/outbox contract should form the boundary.

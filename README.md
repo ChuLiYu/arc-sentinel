@@ -6,6 +6,10 @@ Arc Sentinel indexes registered wallets' transactions and USDC transfers into Po
 
 **Current maturity:** tested local prototype. No live-service availability, benchmark, mainnet readiness, or cross-chain support is claimed. The next release gates are in [the roadmap](docs/ROADMAP.md).
 
+## Agent and contributor navigation
+
+Start with [AGENTS.md](AGENTS.md) and [the project map](docs/INDEX.md). Code, tests and component documents ship together; CI enforces ownership, local links and document co-change. See [the workflow](docs/WORKFLOW.md).
+
 ## Why this project
 
 An event monitor is useful only if it can explain missing data, duplicate delivery and recovery after failure. This repository makes those contracts visible in code and PostgreSQL integration tests, rather than relying on a successful RPC happy path.

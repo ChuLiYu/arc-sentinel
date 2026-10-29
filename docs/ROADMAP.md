@@ -1,5 +1,7 @@
 # Roadmap: prototype → testnet pilot → credible blockchain backend portfolio
 
+[Project map](INDEX.md)
+
 Updated 2026-10-29. This is an execution plan, not a claim that future phases exist. Complete each gate before expanding scope. Keep the existing Python indexer; add TypeScript where cross-chain orchestration benefits from it rather than rewriting working code.
 
 ## Product and target user

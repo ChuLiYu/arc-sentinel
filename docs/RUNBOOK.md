@@ -1,5 +1,7 @@
 # Local operation and gated testnet pilot
 
+[Project map](INDEX.md)
+
 This is an operator guide, not evidence of an existing deployment. Complete the M1 correctness gates in [ROADMAP.md](ROADMAP.md) before a live pilot. Use only your own test wallets. Public read routes expose wallet addresses and labels; do not ingest customer data.
 
 ## Local API
