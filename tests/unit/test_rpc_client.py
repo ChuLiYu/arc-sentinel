@@ -316,11 +316,13 @@ async def test_probe_primary_and_switch_back_after_recovery(url: str):
     try:
         assert await c.eth_block_number() == 300
         assert c.using_fallback is True  # failover happened, fallback served it
+        assert c.provider_generation == 1
 
         # Second call probes the (now recovered) primary and switches back.
         assert await c.eth_block_number() == 300
         assert c.using_fallback is False
         assert c.active_url == url
+        assert c.provider_generation == 2  # returning to primary is a new epoch too
     finally:
         await c.close()
 

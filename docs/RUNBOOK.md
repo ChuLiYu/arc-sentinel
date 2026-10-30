@@ -54,14 +54,16 @@ compose run --rm --no-deps api python -m alembic upgrade head
 compose up -d
 ```
 
-Never print `compose config` or application settings in shared logs: they contain credentials. The API's health result alone is insufficient for launch acceptance. Check checkpoint lag, recent block/transaction samples, worker errors, recovery after restart, disk space, and the rule outcomes as well.
+Never print `compose config` or application settings in shared logs: they contain credentials. The API's health result alone is insufficient for launch acceptance: it currently reflects lag and can appear healthy when a near-head worker has stopped on a lineage error. Inspect recovery-required worker errors until persisted recovery readiness is implemented. Check checkpoint lag, recent block/transaction samples, worker errors, recovery after restart, disk space, and the rule outcomes as well.
 
 ## Failure and replay
 
 - **Wrong chain:** leave the checkpoint untouched, correct RPC/network settings, restart the worker. Never fix this by editing a checkpoint.
 - **Missing block/receipt or malformed log:** the batch rolls back. Inspect provider errors and block identifiers without logging RPC secrets. Repair the provider/decoder and restart; the same range is retried. Never advance the checkpoint to bypass it.
 - **Indexer busy:** another transaction holds the writer lock. Verify the legitimate worker; investigate a long-running poll before stopping a duplicate. The database releases the lock on transaction end/disconnect.
-- **Suspected reorg or inconsistent fallback data:** stop indexing, preserve a database snapshot and record affected block hashes. Until M1 is implemented, repair requires an explicit rebuild/reconciliation procedure; do not claim automatic recovery.
+- **Forked checkpoint, parent/hash mismatch:** the worker refuses the batch. Stop indexing, preserve a database snapshot and record affected block hashes. Automatic ancestor search/rollback is not implemented; repair requires an explicitly reviewed rebuild/reconciliation procedure. Never edit the checkpoint or journal to force progress.
+- **Provider switched during a cycle:** the entire batch is retried. A subsequent stable fallback cycle may succeed after chain/header checks. Repeated failures require provider investigation, not bypassing checks.
+- **Legacy height-only checkpoint after revision `0002`:** schema upgrade preserves the data but the worker stops with a recovery-required error. Keep the original database intact. For an operator-owned demo, prepare a separate empty database, register the intended wallets before starting, choose an explicit historical start and rebuild there; compare the chosen reference range before a deliberate configuration cutover. Preserve original registrations/labels and securely reissue credentials as needed. This is an operator migration, not an automatic recovery tool. A zero-loss in-place historical reconciliation remains M1 work; do not fabricate hashes for the existing checkpoint.
 - **Rules or API failure:** keep a single API replica and inspect stored alerts. Indexer atomicity does not provide exactly-once rule evaluation.
 
 ## Backup, restore and rollback

@@ -50,3 +50,11 @@ Add reorg, multichain identity and restore/load evidence with the corresponding 
 ## Knowledge architecture regression evidence
 
 The tooling fixtures also add a previously unknown knowledge document with a broken source link and require rejection, then repair it. Archive classification may exempt historical prose links but cannot hide required component or agent-policy documents. This checks discoverability and linkage, not whether domain prose is true.
+
+## M1 lineage and upgrade evidence
+
+The recovery PostgreSQL fixture includes complete block/transaction/receipt/log identities. It injects parent discontinuity (including inside an empty-wallet batch), forked checkpoints even while caught up, changed final headers, wrong transaction/receipt membership, out-of-range or conflicting duplicate logs, and mid-cycle provider switches. Assertions cover raw rows, journal and checkpoint after failure and clean retry. Catch-up batch caps now run against real PostgreSQL instead of a height-only session mock. Primary/fallback recovery unit tests also require a monotonic provider generation.
+
+The populated-baseline [migration test](../tests/integration/test_migrations_pg.py) downgrades only its disposable database to `0001`, inserts related legacy rows, upgrades to head and checks preservation without invented journal hashes. It checks the new table's model columns and chain-scoped height key. This does not establish backup restore or a live migration.
+
+Five new inconsistency cases were demonstrated failing against the old worker before the fix (parent link, receipt block identity, log range, changed boundary, caught-up fork). Full verification results are recorded once in [VERIFICATION.md](VERIFICATION.md); synthetic data does not establish provider completeness or fork rollback.

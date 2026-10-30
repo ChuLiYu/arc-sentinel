@@ -2,6 +2,27 @@
 
 [Project map](INDEX.md)
 
+## Flywheel refactor and M1 foundation — 2026-10-30
+
+Local candidate on `refactor/flywheel-m1-foundation`, based on `6751283cd95f55567b35533168adeb9539450567`. The pre-change full baseline passed 204 tests. This change retains the stack/router/component ownership, adds authority/requirement tracing and strengthens maintained-document validation, then implements the first M1 lineage slice.
+
+| Check | Result | Boundary |
+| --- | --- | --- |
+| `./scripts/verify.sh` | Mapping/links and Ruff passed; **231 tests passed**, no skips | Real disposable PostgreSQL + mocked RPC; not live-chain verification |
+| `python3 scripts/project_check.py --base origin/main` | Passed for complete candidate diff | File ownership/co-change and local file links, not prose truth |
+| Knowledge gate regression | **22 tooling tests**, included above | New broken-link and archive-policy cases failed before repair; no semantic business approval inferred |
+| M1 failure and migration tests | Included above | Parent/member/range/boundary, caught-up fork, legacy checkpoint, provider switch/retry, empty-wallet continuity and populated `0001` upgrade |
+| Local image `arc-sentinel:flywheel-m1` | Build and offline smoke passed | UID 10001, app/journal model import and `0002` migration present; no registry publication |
+| Scoped independent read-only review | Sole malformed-block-number exception finding fixed and confirmed; focused worker/RPC suite **78 passed** | Reviewer ran static/unit/tooling checks; implementer ran full PostgreSQL suite and build |
+
+Regression demonstration before the M1 fix: five new cases failed on the old worker (parent discontinuity, wrong receipt block, out-of-range log, changed batch boundary and caught-up checkpoint fork). The new cases now refuse progress and preserve rows/journal/checkpoint. Malformed header quantities/hashes/timestamps and mixed-case transaction hashes also have unit coverage. Populated baseline upgrade preserves existing rows and leaves the journal empty rather than inventing historical evidence.
+
+The [worked change path](ENGINEERING.md) was executed for the journal slice. The coverage inventory there retains every runtime component and identifies contract, knowledge and historical-input authority. Historical prototype rule approval is still unknown, and the [requirement trace](REQUIREMENTS.md) preserves that distinction.
+
+No live RPC, signing, cloud resources, production migration, remote push or deployment was used. The new candidate has no remote CI result yet; prior CI on `6751283` does not validate it. Automatic fork rollback, raw chain-scoped identities, wallet ledger and persisted recovery readiness remain M1 work. Schema upgrade alone cannot resume a legacy height-only checkpoint; see [runbook](RUNBOOK.md).
+
+## Previous baseline — 2026-10-29
+
 Local verification on 2026-10-29, branch `feat/launch-readiness`:
 
 | Check | Result | Boundary |

@@ -30,7 +30,8 @@
       ],
       "doc": "app/db/README.md",
       "tests": [
-        "tests/integration/test_worker_pg.py"
+        "tests/integration/test_worker_pg.py",
+        "tests/integration/test_migrations_pg.py"
       ]
     },
     {

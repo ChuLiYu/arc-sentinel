@@ -2,7 +2,7 @@
 
 [Project map](INDEX.md)
 
-Updated 2026-10-29. This is an execution plan, not a claim that future phases exist. Complete each gate before expanding scope. Keep the existing Python indexer; add TypeScript where cross-chain orchestration benefits from it rather than rewriting working code.
+Updated 2026-10-30. This is an execution plan, not a claim that future phases exist. Complete each gate before expanding scope. Keep the existing Python indexer; add TypeScript where cross-chain orchestration benefits from it rather than rewriting working code.
 
 ## Product and target user
 
@@ -14,8 +14,8 @@ First release: read-only testnet monitoring for operator-owned demo wallets, one
 
 | Order | Deliverable | Exit gate | Hiring evidence |
 | --- | --- | --- | --- |
-| M0 — this change | Fail-closed batches, single writer, explicit backfill start, CI/image repair and runbook | Lint, full PostgreSQL suite, image build and smoke test pass; limits remain explicit | Transaction boundaries, recovery testing, deployment judgment |
-| M1 — next priority | Canonical history and wallet ledger | Fork fixtures replace 1/3/10 blocks; remove orphaned rows, repair summaries/alerts, replay canonical branch; crash at every rollback/commit boundary leaves a consistent checkpoint | Reorg handling and data modelling |
+| M0 — verified baseline | Fail-closed batches, single writer, explicit backfill start, CI/image repair and runbook | Lint, full PostgreSQL suite, image build and smoke test pass; limits remain explicit | Transaction boundaries, recovery testing, deployment judgment |
+| M1 — in progress | Canonical history and wallet ledger | Fork fixtures replace 1/3/10 blocks; remove orphaned rows, repair summaries/alerts, replay canonical branch; crash at every rollback/commit boundary leaves a consistent checkpoint | Reorg handling and data modelling |
 | M2 | Two-chain TypeScript message observer + durable workflows | Mocked send/verify/deliver fixtures correlate correctly even when delivered before sent; restart worker during wait; duplicate/out-of-order events do not duplicate notifications | TypeScript, distributed state machines, interoperability |
 | M3 | AWS testnet pilot | Terraform creates a reproducible stack; seven-day observation, successful restore drill and bounded-cost report; no unexplained missing events in a pinned reference range | Cloud operations and measured reliability |
 | M4 | Public portfolio release | Fresh-machine demo verified; evidence folder populated; current CI green; 3-minute demo and concise design narrative; code/history reviewed before public visibility | Reviewable ownership and engineering communication |
@@ -24,9 +24,9 @@ Suggested work breakdown: one focused PR per milestone subtask below. Do M1 befo
 
 ## M1: canonical history before public pilot
 
-1. Add an `indexed_blocks` journal keyed by `(chain_id, block_number)` with hash, parent hash, timestamp and observed provider. Add chain ID/block hash to raw event identities and foreign keys; plan the migration from the current single-chain tables. Transaction hash alone is insufficient for cross-chain storage.
-2. Validate contiguous parent hashes, receipts/logs against the fetched block hash and range, and the batch boundary before committing. Validate fallback providers' chain identity and block agreement; a cycle preflight check alone cannot prevent a mid-cycle provider switch returning inconsistent data.
-3. Detect forked checkpoints; find a common ancestor within a configured rollback window. Above that depth, stop with a visible recovery-required status. Never silently reset to the head.
+1. **Foundation implemented:** additive `indexed_blocks` journal keyed by `(chain_id, block_number)` with hash, parent hash, timestamp, observed provider and anchor provenance. Populated-baseline migration preservation is tested. **Remaining:** add chain ID/block hash to raw event identities and foreign keys; plan the migration from the current single-chain tables. Transaction hash alone is insufficient for cross-chain storage.
+2. **Foundation implemented:** validate contiguous parent hashes, transactions/receipts/logs against fetched block identities/ranges, and reread the batch boundary before committing. Reject any mid-cycle provider change and recheck chain identity; clean fallback retries are tested. Check the saved checkpoint hash even when caught up. Legacy checkpoints without hashes stop rather than fabricate provenance. These checks do not prove provider completeness or implement fork repair.
+3. **Detection implemented; recovery remaining:** find a common ancestor within a configured rollback window. Above that depth, stop with a visible recovery-required status. Never silently reset to the head.
 4. Roll back orphaned transactions/transfers in FK-safe order and either invalidate or rebuild affected alerts and daily summaries in the same recovery protocol. Add explicit canonical/orphaned provenance rather than leaving stale derived data visible as current truth.
 5. Separate raw transactions/events from per-wallet ledger entries. Test both wallets being monitored, self-transfers, relayer transfers and contract creation. Make onboarding/backfill per wallet or document an operator-only registration cutover.
 6. Publish a deterministic fork/replay demo. Assert the final ledger equals a clean replay of the canonical fixture, not merely that row counts look plausible.
@@ -78,7 +78,7 @@ Add `docs/evidence/` only when genuine artifacts exist: reproducible benchmark o
 
 Pin Arc Sentinel as the main backend work. A useful review sequence is: README → recovery test → reorg ADR → message workflow → operations evidence. Show a five-minute failure story: provider loses a receipt, checkpoint stops, service recovers, ledger replay stays consistent.
 
-Possible resume bullet after M0: “Hardened an EVM monitoring backend with transactional checkpoints, PostgreSQL single-writer coordination, fail-closed RPC ingestion, and automated rollback/replay tests.” Add TypeScript, cross-chain, AWS and numerical results only after their respective milestones pass.
+Possible resume bullet after M0: “Hardened an EVM monitoring backend with transactional checkpoints, PostgreSQL single-writer coordination, fail-closed RPC ingestion, and automated failure/transaction-rollback/retry tests.” Add TypeScript, cross-chain, AWS and numerical results only after their respective milestones pass.
 
 ## Explicit scope limits
 

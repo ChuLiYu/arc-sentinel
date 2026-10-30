@@ -1,6 +1,6 @@
-"""Indexer Worker — main polling loop (SPEC §4, Phase 2 / §7).
+"""Indexer worker; current contracts and tradeoffs live in this module's README.
 
-Design decisions (mirroring the spec):
+Design decisions:
 
 * **HTTP polling, not WebSocket** — every 2–3 s the worker asks for the head,
   then indexes only up to ``head - confirmations`` (head-2 safety buffer).
@@ -9,13 +9,13 @@ Design decisions (mirroring the spec):
 * **Transactions + USDC Transfer logs** — regular blocks (full txs) are scanned
   for wallet-related transactions; ``eth_getLogs`` (USDC contract + Transfer
   topic + agent wallets) feeds ``token_transfers``. A transfer whose transaction
-  was not already picked up by block scan (e.g. a relayer-mediated internal
-  receive) is fetched by hash and indexed as well.
+  was not already picked up by wallet matching (e.g. a relayer-mediated
+  receive) is resolved from the same full block and indexed as well.
 * **Idempotent writes** — ``transactions.tx_hash`` (PK) and
   ``token_transfers (tx_hash, log_index)`` (UNIQUE) power PostgreSQL
   ``ON CONFLICT DO NOTHING`` upserts, so resumes never duplicate rows.
-* **Durable breakpoint** — ``indexer_state.last_indexed_block`` advances in the
-  same transaction as the rows; a SIGTERM/SIGINT between cycles loses nothing
+* **Durable breakpoint** — block lineage and ``indexer_state.last_indexed_block``
+  advance in the same transaction as the rows; a SIGTERM/SIGINT between cycles loses nothing
   because each cycle is already committed.
 * **Batched catch-up (SPEC §20.7)** — a cycle indexes at most
   ``max_blocks_per_cycle`` blocks, so a large backlog is drained gradually
@@ -30,7 +30,7 @@ import signal
 import time
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
 from typing import Any, Literal
@@ -40,7 +40,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
-from app.db.models import Agent, TokenTransfer, Transaction
+from app.db.models import Agent, IndexedBlock, TokenTransfer, Transaction
 from app.indexer.decode import (
     NUMERIC_38_MAX,
     TRANSFER_EVENT_SIG,
@@ -49,6 +49,7 @@ from app.indexer.decode import (
     raw_6dp_to_usdc,
     wei_to_eth,
 )
+from app.indexer.lineage import BlockHeader, hash_value, quantity
 from app.indexer.rpc_client import RpcClient, RpcError, RpcProviderDown
 from app.indexer.state import get_last_indexed_block, set_last_indexed_block, try_indexer_lock
 
@@ -259,7 +260,7 @@ def _parse_tx(
     gas_used, fee_wei, fee_usdc = _compute_gas(receipt, tx)
     input_hex = tx.get("input") or "0x"
     return ParsedTx(
-        tx_hash=str(tx["hash"]),
+        tx_hash=str(tx["hash"]).lower(),
         block_number=block_number,
         block_time=block_time,
         from_address=str(tx.get("from") or ""),
@@ -287,7 +288,7 @@ def _decode_log(log: dict[str, Any], usdc_address: str) -> ParsedTransfer | None
         raise DecodeError("missing transaction hash or invalid log index")
     decoded = decode_transfer_log(log["topics"], str(log.get("data") or ""))
     return ParsedTransfer(
-        tx_hash=str(log["transactionHash"]),
+        tx_hash=str(log["transactionHash"]).lower(),
         log_index=log_index,
         token_address=token_address,
         from_address=decoded.from_address,
@@ -424,6 +425,7 @@ class IndexerWorker:
         (SPEC §20.7); a backlog larger than that is caught up over several
         cycles instead of hammering the provider in one backfill.
         """
+        generation = self._rpc.provider_generation
         actual_chain_id = await self._rpc.eth_chain_id()
         if actual_chain_id != self._chain_id:
             raise RpcError(
@@ -437,7 +439,19 @@ class IndexerWorker:
                 raise IndexerBusyError("another indexer owns this chain")
             last = get_last_indexed_block(session, self._chain_id)
 
+            previous = None
+            if last is not None:
+                saved = session.get(IndexedBlock, (self._chain_id, last))
+                if saved is None:
+                    raise RpcError("recovery required: legacy checkpoint has no block hash")
+                previous = await self._read_header(last)
+                if previous.hash != saved.block_hash:
+                    raise RpcError("recovery required: checkpoint is no longer canonical")
+
             if last is None and self._start_block is None:
+                anchor = await self._read_header(safe_head)
+                await self._validate_view(generation, anchor)
+                self._journal(session, [anchor], anchor=True)
                 set_last_indexed_block(session, self._chain_id, safe_head)
                 session.commit()
                 return PollResult(
@@ -458,6 +472,7 @@ class IndexerWorker:
                 last = self._start_block - 1
             from_block = last + 1
             if from_block > safe_head:  # already up to date
+                await self._validate_view(generation, previous)
                 return PollResult(
                     chain_id=self._chain_id,
                     head=head,
@@ -476,6 +491,13 @@ class IndexerWorker:
             # ``last_indexed_block`` advances only as far as ``to_block``.
             to_block = min(safe_head, from_block + self._max_blocks_per_cycle - 1)
 
+            if previous is None and from_block > 0:
+                previous = await self._read_header(from_block - 1)
+            blocks = await self._fetch_blocks(from_block, to_block)
+            headers = [BlockHeader.parse(block, from_block + i) for i, block in enumerate(blocks)]
+            if previous is not None and headers[0].parent_hash != previous.hash:
+                raise RpcError("recovery required: batch does not extend checkpoint")
+
             agents = self._load_active_agents(session)
             wallet_map = {
                 agent.wallet_address.lower(): agent.id for agent in agents
@@ -488,9 +510,15 @@ class IndexerWorker:
                     from_block=from_block,
                     to_block=to_block,
                     wallet_map=wallet_map,
+                    blocks=blocks,
                 )
                 tx_rows = [tx.to_row() for tx in parsed_txs]
                 transfer_rows = [t.to_row() for t in parsed_transfers]
+
+            await self._validate_view(generation, headers[-1])
+            if checkpoint is None and previous is not None:
+                self._journal(session, [previous], anchor=True)
+            self._journal(session, headers)
 
             transactions_inserted = 0
             transfers_inserted = 0
@@ -519,6 +547,32 @@ class IndexerWorker:
                 last_indexed_block=to_block,
             )
 
+    async def _read_header(self, number: int) -> BlockHeader:
+        block = await self._rpc.eth_get_block_by_number(number, full_transactions=False)
+        return BlockHeader.parse(block, number)
+
+    async def _validate_view(self, generation: int, boundary: BlockHeader | None) -> None:
+        if boundary is not None and await self._read_header(boundary.number) != boundary:
+            raise RpcError("batch boundary changed; batch must be retried")
+        chain_id = await self._rpc.eth_chain_id()
+        if chain_id != self._chain_id or self._rpc.provider_generation != generation:
+            raise RpcError("RPC provider/chain changed during batch; batch must be retried")
+
+    def _journal(
+        self, session: Session, headers: list[BlockHeader], *, anchor: bool = False
+    ) -> None:
+        provider = "fallback" if self._rpc.using_fallback else "primary"
+        for header in headers:
+            saved = session.get(IndexedBlock, (self._chain_id, header.number))
+            if saved is not None and saved.block_hash != header.hash:
+                raise RpcError("recovery required: journal conflicts with fetched history")
+        session.execute(pg_insert(IndexedBlock).values([
+            {"chain_id": self._chain_id, "block_number": header.number,
+             "block_hash": header.hash, "parent_hash": header.parent_hash,
+             "block_time": header.timestamp, "observed_provider": provider, "is_anchor": anchor}
+            for header in headers
+        ]).on_conflict_do_nothing(index_elements=["chain_id", "block_number"]))
+
     def _load_active_agents(self, session: Session) -> list[Agent]:
         stmt = select(Agent).where(Agent.is_active.is_(True))
         return list(session.scalars(stmt).all())
@@ -532,40 +586,76 @@ class IndexerWorker:
         from_block: int,
         to_block: int,
         wallet_map: dict[str, uuid.UUID],
+        blocks: list[dict[str, Any]] | None = None,
     ) -> tuple[list[ParsedTx], list[ParsedTransfer]]:
-        """Scan a block range + logs; return parsed rows (no DB writes)."""
-        blocks = await self._fetch_blocks(from_block, to_block)
-
-        candidates: list[tuple[dict[str, Any], int, datetime]] = []
+        """Bind every transaction, receipt and log to the same fetched lineage."""
+        if blocks is None:
+            blocks = await self._fetch_blocks(from_block, to_block)
+        headers = {from_block + i: BlockHeader.parse(block, from_block + i)
+                   for i, block in enumerate(blocks)}
+        transactions = {}
+        candidates = []
         for block in blocks:
-            block_number = hex_to_int(block.get("number"))
-            block_time = _block_time(hex_to_int(block.get("timestamp")))
-            for tx in block.get("transactions") or []:
+            header = headers[quantity(block["number"])]
+            for tx in block["transactions"]:
+                tx_hash = hash_value(tx.get("hash") if isinstance(tx, dict) else None)
+                header.validate_member(tx, tx_hash)
+                if tx_hash in transactions:
+                    raise RpcError("duplicate transaction in fetched blocks")
+                transactions[tx_hash] = (tx, header)
                 if _tx_touches_wallet(tx, wallet_map):
-                    candidates.append((tx, block_number, block_time))
-
-        receipts = await self._fetch_receipts([tx["hash"] for tx, _, _ in candidates])
-        parsed = [
-            _parse_tx(tx, block_number, block_time, wallet_map, receipts.get(tx["hash"]))
-            for tx, block_number, block_time in candidates
-        ]
+                    candidates.append(tx_hash)
 
         logs = await self._fetch_transfers(from_block, to_block, wallet_map)
-        parsed_hashes = {tx.tx_hash for tx in parsed}
-        transfers: list[ParsedTransfer] = []
+        transfers = []
+        seen = {}
         for log in logs:
+            if not isinstance(log, dict):
+                raise RpcError("invalid log object")
+            number = quantity(log.get("blockNumber"))
+            tx_hash = hash_value(log.get("transactionHash"))
+            header = headers.get(number)
+            if (header is None or hash_value(log.get("blockHash")) != header.hash
+                    or tx_hash not in transactions or transactions[tx_hash][1] != header):
+                raise RpcError("log identity is outside the fetched block range")
             try:
                 transfer = _decode_log(log, self._usdc_address)
             except (DecodeError, KeyError, ValueError, TypeError) as exc:
                 raise RpcError("undecodable Transfer log; batch must be retried") from exc
             if transfer is None:
                 continue
+            key = (tx_hash, transfer.log_index)
+            if key in seen:
+                if seen[key] != log:
+                    raise RpcError("conflicting duplicate Transfer log")
+                continue
+            seen[key] = log
             transfers.append(transfer)
-            if transfer.tx_hash not in parsed_hashes:
-                # e.g. relayer-mediated internal receive: the block scan missed it.
-                parsed.append(await self._parse_missing_tx(transfer, wallet_map))
-                parsed_hashes.add(transfer.tx_hash)
 
+        required = list(dict.fromkeys([*candidates, *(t.tx_hash for t in transfers)]))
+        receipts = await self._fetch_receipts(required)
+        for tx_hash in required:
+            transactions[tx_hash][1].validate_member(receipts.get(tx_hash), tx_hash, receipt=True)
+        parsed = [
+            _parse_tx(transactions[h][0], transactions[h][1].number,
+                      transactions[h][1].timestamp, wallet_map, receipts[h])
+            for h in candidates
+        ]
+        parsed_hashes = set(candidates)
+        for transfer in transfers:
+            if _status_from_receipt(receipts[transfer.tx_hash]) != "success":
+                raise RpcError("Transfer log belongs to a failed transaction")
+            if transfer.tx_hash not in parsed_hashes:
+                tx, header = transactions[transfer.tx_hash]
+                parsed_tx = _parse_tx(tx, header.number, header.timestamp,
+                                       wallet_map, receipts[transfer.tx_hash])
+                sender = transfer.from_address.lower()
+                recipient = transfer.to_address.lower()
+                parsed.append(replace(
+                    parsed_tx, agent_id=wallet_map.get(sender, wallet_map.get(recipient)),
+                    direction="outbound" if sender in wallet_map else "inbound",
+                ))
+                parsed_hashes.add(transfer.tx_hash)
         return parsed, transfers
 
     async def _fetch_blocks(
@@ -578,12 +668,8 @@ class IndexerWorker:
                 block = await self._rpc.eth_get_block_by_number(
                     number, full_transactions=True
                 )
-                if (
-                    not block
-                    or hex_to_int(block.get("number")) != number
-                    or block.get("timestamp") is None
-                    or not isinstance(block.get("transactions"), list)
-                ):
+                BlockHeader.parse(block, number)
+                if not isinstance(block.get("transactions"), list):
                     raise RpcError(
                         f"incomplete or mismatched block {number}; batch must be retried"
                     )
@@ -592,7 +678,11 @@ class IndexerWorker:
         results = await asyncio.gather(
             *(fetch(n) for n in range(from_block, to_block + 1))
         )
-        return sorted(results, key=lambda b: hex_to_int(b.get("number")) or 0)
+        ordered = sorted(results, key=lambda b: quantity(b["number"]))
+        for parent, child in zip(ordered, ordered[1:], strict=False):
+            if hash_value(child["parentHash"]) != hash_value(parent["hash"]):
+                raise RpcError("noncontiguous parent hashes; batch must be retried")
+        return ordered
 
     async def _fetch_receipts(
         self, tx_hashes: list[str]
@@ -615,7 +705,7 @@ class IndexerWorker:
         to_block: int,
         wallet_map: dict[str, uuid.UUID],
     ) -> list[dict[str, Any]]:
-        """USDC Transfer logs touching any agent wallet, deduplicated."""
+        """Fetch candidate logs; validate identities before deduplicating."""
         wallet_addrs = sorted(wallet_map)
         outbound_topics: list[list[str] | None] = [
             [TRANSFER_EVENT_SIG],
@@ -652,70 +742,9 @@ class IndexerWorker:
                 for start in range(from_block, to_block + 1, self._logs_max_range_size)
             )
         )
-        seen: set[tuple[str, Any]] = set()
-        unique: list[dict[str, Any]] = []
-        for chunk in chunks:
-            for log in chunk:
-                key = (log.get("transactionHash"), log.get("logIndex"))
-                if key in seen:
-                    continue
-                seen.add(key)
-                unique.append(log)
-        return unique
-
-    async def _parse_missing_tx(
-        self, transfer: ParsedTransfer, wallet_map: dict[str, uuid.UUID]
-    ) -> ParsedTx:
-        """Index a transaction referenced by a Transfer log but missed by scan.
-
-        The transfer was already decoded from the log, so its ``from``/``to``
-        sides (not the raw transaction's) are the authoritative view of which
-        agent wallet the funds touched — a relayer may have submitted the tx,
-        making ``tx.from``/``tx.to`` no longer equal to the USDC sides (SPEC §4).
-        """
-        tx = await self._rpc.eth_get_transaction_by_hash(transfer.tx_hash)
-        if tx is None:
-            raise RpcError(f"transaction {transfer.tx_hash} referenced by a log not found")
-        block_number = hex_to_int(tx.get("blockNumber"))
-        if block_number is None:
-            raise RpcError(f"transaction {transfer.tx_hash} is pending; cannot index")
-        block = await self._rpc.eth_get_block_by_number(
-            block_number, full_transactions=False
-        )
-        if (
-            not block
-            or hex_to_int(block.get("number")) != block_number
-            or block.get("timestamp") is None
-        ):
-            raise RpcError(f"missing or mismatched block for transaction {transfer.tx_hash}")
-        block_time = _block_time(hex_to_int(block["timestamp"]))
-        receipt = await self._rpc.eth_get_transaction_receipt(transfer.tx_hash)
-        _status_from_receipt(receipt)  # Missing receipts must never be assumed successful.
-
-        transfer_from = str(transfer.from_address).lower()
-        transfer_to = str(transfer.to_address).lower()
-        agent_id = wallet_map.get(transfer_from)
-        if agent_id is None:
-            agent_id = wallet_map.get(transfer_to)
-        direction: Direction = "outbound" if transfer_from in wallet_map else "inbound"
-
-        gas_used, fee_wei, fee_usdc = _compute_gas(receipt, tx)
-        input_hex = tx.get("input") or "0x"
-        return ParsedTx(
-            tx_hash=str(tx["hash"]),
-            block_number=block_number,
-            block_time=block_time,
-            from_address=str(tx.get("from") or ""),
-            to_address=str(tx.get("to") or "").lower() if tx.get("to") else None,
-            agent_id=agent_id,
-            direction=direction,
-            status=_status_from_receipt(receipt),
-            method_selector=_method_selector(input_hex),
-            gas_used=gas_used,
-            gas_fee_wei=fee_wei,
-            gas_fee_usdc=fee_usdc,
-            raw_input_head=_raw_input_head(input_hex),
-        )
+        # Validate every response before deduplicating; an inbound duplicate
+        # must not conceal an outbound response from another fork.
+        return [log for chunk in chunks for log in chunk]
 
 
 # ---------------------------------------------------------------------------

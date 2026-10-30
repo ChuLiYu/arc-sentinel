@@ -60,7 +60,7 @@ For an interactive API and an eventual pilot, use [the runbook](docs/RUNBOOK.md)
 ## Scope and known limits
 
 - **One chain per database.** Transaction and transfer keys are not chain-scoped; this schema must change before a second chain shares the database.
-- **No chain reorganization recovery yet.** A confirmation buffer is not finality. Canonical hash validation, rollback, derived-data repair and receipt/log consistency across provider failover remain launch blockers.
+- **No chain reorganization recovery yet.** A confirmation buffer is not finality. Hash/parent/member checks now stop inconsistent batches and forked checkpoints; mid-cycle provider changes force retry. Ancestor search, rollback, derived-data repair and visible recovery state remain launch blockers.
 - New wallets are observed prospectively unless an explicit rescan is performed. A new database defaults to anchoring at the current safe head when `START_BLOCK` is unset.
 - One transaction currently maps to one agent; transfers between two monitored wallets need a separate wallet-ledger projection before multi-user rollout.
 - The rules loop runs inside the API process; it is neither a durable workflow engine nor safe evidence of exactly-once alerts across API replicas.

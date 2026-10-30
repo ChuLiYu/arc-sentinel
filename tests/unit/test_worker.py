@@ -332,14 +332,18 @@ class _StubRpc:
 
 
 class TestIndexRangeMissingTxDedup:
-    async def test_two_logs_for_one_tx_are_parsed_once(self) -> None:
-        tx_hash = "0x" + "99" * 32
+    @pytest.mark.parametrize("mixed_case", [False, True])
+    async def test_two_logs_for_one_tx_are_parsed_once(self, mixed_case: bool) -> None:
+        tx_hash = "0x" + "ab" * 32
+        wire_hash = "0x" + "AB" * 32 if mixed_case else tx_hash
         # Relay-mediated: block scan finds no wallet tx, only Transfer logs do.
-        tx = {"hash": tx_hash, "from": OTHER, "to": TOKEN, "input": "0x", "blockNumber": "0x64"}
+        tx = {"hash": wire_hash, "from": OTHER, "to": TOKEN, "input": "0x", "blockNumber": "0x64",
+              "blockHash": "0x" + "64" * 32}
         block = {
             "number": "0x64",
             "timestamp": "0x655e3c00",
-            "transactions": [],  # nothing touches the wallet directly
+            "hash": "0x" + "64" * 32, "parentHash": "0x" + "63" * 32,
+            "transactions": [tx],  # present, but neither tx side touches the wallet
         }
 
         def log(to_addr: str, index: int) -> dict[str, Any]:
@@ -347,15 +351,16 @@ class TestIndexRangeMissingTxDedup:
                 "address": TOKEN,
                 "topics": [TRANSFER_EVENT_SIG, _topic(OTHER), _topic(to_addr)],
                 "data": _word(1000),
-                "transactionHash": tx_hash,
-                "logIndex": hex(index),
+                "transactionHash": wire_hash,
+                "logIndex": hex(index), "blockNumber": "0x64", "blockHash": block["hash"],
             }
 
         logs = [log(WALLET, 0), log(WALLET, 1)]  # two transfers, same tx
         rpc = _StubRpc(
             block=block,
             txs={tx_hash: tx},
-            receipts={tx_hash: _receipt()},
+            receipts={tx_hash: dict(_receipt(), transactionHash=tx_hash,
+                                    blockNumber="0x64", blockHash=block["hash"])},
             logs=logs,
         )
         worker = IndexerWorker(
@@ -382,23 +387,26 @@ class TestIndexRangeMissingTxDedup:
         # Agent's sends are submitted by a relayer: tx.from=OTHER, tx.to=TOKEN;
         # the USDC log says from=WALLET(agent) -> OTHER. Must be indexed as
         # outbound with the agent attached (this is how budget rules fire).
-        tx = {"hash": tx_hash, "from": OTHER, "to": TOKEN, "input": "0x", "blockNumber": "0x64"}
+        tx = {"hash": tx_hash, "from": OTHER, "to": TOKEN, "input": "0x", "blockNumber": "0x64",
+              "blockHash": "0x" + "64" * 32}
         block = {
             "number": "0x64",
             "timestamp": "0x655e3c00",
-            "transactions": [],
+            "hash": "0x" + "64" * 32, "parentHash": "0x" + "63" * 32,
+            "transactions": [tx],
         }
         log = {
             "address": TOKEN,
             "topics": [TRANSFER_EVENT_SIG, _topic(WALLET), _topic(OTHER)],
             "data": _word(500),
             "transactionHash": tx_hash,
-            "logIndex": "0x0",
+            "logIndex": "0x0", "blockNumber": "0x64", "blockHash": block["hash"],
         }
         rpc = _StubRpc(
             block=block,
             txs={tx_hash: tx},
-            receipts={tx_hash: _receipt()},
+            receipts={tx_hash: dict(_receipt(), transactionHash=tx_hash,
+                                    blockNumber="0x64", blockHash=block["hash"])},
             logs=[log],
         )
         worker = IndexerWorker(
@@ -417,105 +425,6 @@ class TestIndexRangeMissingTxDedup:
         # tx-level sides still reflect the on-chain submitter, not the USDC sides
         assert parsed[0].from_address == OTHER
         assert parsed[0].to_address == TOKEN
-
-
-# ---------------------------------------------------------------------------
-# SPEC §20.7 — poll_once catch-up is batched per cycle
-# ---------------------------------------------------------------------------
-class _HeadOnlyRpc:
-    """RPC stub serving only eth_blockNumber (no agents ⇒ no further calls)."""
-
-    def __init__(self, head: int) -> None:
-        self._head = head
-
-    async def eth_chain_id(self) -> int:
-        return 1
-
-    async def eth_block_number(self) -> int:
-        return self._head
-
-
-class _FakeState:
-    def __init__(self, block: int) -> None:
-        self.last_indexed_block = block
-
-
-class _EmptyScalars:
-    def all(self) -> list[Any]:
-        return []
-
-
-class _FakeSession:
-    """Stand-in for a SQLAlchemy Session on poll_once's no-agents path."""
-
-    def __init__(self, last: int) -> None:
-        self._last = last
-        self.committed = False
-
-    def __enter__(self) -> _FakeSession:
-        return self
-
-    def __exit__(self, *exc_info: object) -> bool:
-        return False
-
-    def get(self, model: object, chain_id: int) -> _FakeState | None:
-        return _FakeState(self._last)
-
-    def scalars(self, statement: object) -> _EmptyScalars:
-        return _EmptyScalars()
-
-    def scalar(self, statement, params=None):
-        return True  # This DB-free fixture owns the advisory lock.
-
-    def commit(self) -> None:
-        self.committed = True
-
-
-class TestPollOnceCatchUpBatchCap:
-    async def test_backlog_capped_at_max_blocks_per_cycle(self, monkeypatch) -> None:
-        written: list[int] = []
-        monkeypatch.setattr(
-            "app.indexer.worker.set_last_indexed_block",
-            lambda session, chain_id, block: written.append(block),
-        )
-        # head 502, confirmations=2 ⇒ safe_head=500; breakpoint at 100 ⇒ a
-        # 400-block backlog — but one cycle may index only 80 blocks and the
-        # remainder is left for later cycles (SPEC §20.7).
-        worker = IndexerWorker(
-            session_factory=lambda: _FakeSession(last=100),
-            rpc=_HeadOnlyRpc(head=502),
-            chain_id=1,
-            usdc_address=TOKEN,
-            confirmations=2,
-            max_blocks_per_cycle=80,
-        )
-        result = await worker.poll_once()
-        assert result.from_block == 101
-        assert result.to_block == 180  # 101 + 80 - 1
-        assert result.last_indexed_block == 180
-        assert written == [180]
-
-    async def test_small_lag_indexes_through_safe_head(self, monkeypatch) -> None:
-        written: list[int] = []
-        monkeypatch.setattr(
-            "app.indexer.worker.set_last_indexed_block",
-            lambda session, chain_id, block: written.append(block),
-        )
-        # A 10-block lag is within the 80-block cap → the whole safe head is
-        # indexed in one cycle, exactly like the pre-batching behaviour.
-        worker = IndexerWorker(
-            session_factory=lambda: _FakeSession(last=490),
-            rpc=_HeadOnlyRpc(head=502),
-            chain_id=1,
-            usdc_address=TOKEN,
-            confirmations=2,
-            max_blocks_per_cycle=80,
-        )
-        result = await worker.poll_once()
-        assert result.from_block == 491
-        assert result.to_block == 500  # min(500, 491 + 80 - 1)
-        assert result.last_indexed_block == 500
-        assert written == [500]
 
 
 @pytest.mark.parametrize("change", [
@@ -541,6 +450,26 @@ async def test_missing_or_wrong_block_cannot_be_treated_as_empty(block):
     rpc = _StubRpc(block=block, txs={}, receipts={}, logs=[])
     worker = IndexerWorker(
         session_factory=sessionmaker(), rpc=rpc, chain_id=1, usdc_address=TOKEN
+    )
+    with pytest.raises(RpcError, match="block 100"):
+        await worker._fetch_blocks(100, 100)
+
+
+@pytest.mark.parametrize("change", [
+    {"number": True}, {"number": "invalid"},
+    {"hash": None}, {"hash": "0x1234"}, {"parentHash": "0xgg"},
+    {"timestamp": -1}, {"timestamp": True}, {"timestamp": "0x" + "f" * 64},
+])
+async def test_malformed_header_refuses_batch(change):
+    block = {
+        "number": "0x64", "hash": "0x" + "01" * 32,
+        "parentHash": "0x" + "02" * 32, "timestamp": "0x1", "transactions": [],
+    }
+    block.update(change)
+    worker = IndexerWorker(
+        session_factory=sessionmaker(),
+        rpc=_StubRpc(block=block, txs={}, receipts={}, logs=[]),
+        chain_id=1, usdc_address=TOKEN,
     )
     with pytest.raises(RpcError, match="block 100"):
         await worker._fetch_blocks(100, 100)

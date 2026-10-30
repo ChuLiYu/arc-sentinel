@@ -50,7 +50,7 @@ This is the flywheel migration inventory, not a duplicate runtime architecture. 
 
 ## Worked change path
 
-For M1 journal work: **Locate** indexer/database in the registry; **Load** their READMEs, CHAIN-CANONICAL and contract pointers; **Resolve** roadmap intent versus height-only observed state (journalling is only a partial M1 gate); **Implement** an additive migration and focused failure fixtures; **Synchronize** models, indexer/database/testing knowledge and roadmap status; **Validate** migration preservation, rollback/continuity failures, the full verification and scoped independent review. The evidence record states what actually ran. New document link fixtures exercise a failure in the knowledge architecture itself, rather than claiming that file presence proves semantic correctness.
+Executed for the M1 journal slice (see [verification evidence](VERIFICATION.md)): **Locate** indexer/database in the registry; **Load** their READMEs, CHAIN-CANONICAL and contract pointers; **Resolve** roadmap intent versus height-only observed state (journalling is only a partial M1 gate); **Implement** an additive migration and focused failure fixtures; **Synchronize** models, indexer/database/testing knowledge and roadmap status; **Validate** migration preservation, rollback/continuity failures, the full verification and scoped independent review. The evidence record states what actually ran. New document link fixtures exercise a failure in the knowledge architecture itself, rather than claiming that file presence proves semantic correctness.
 
 ## Minimum component knowledge
 

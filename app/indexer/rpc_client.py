@@ -149,6 +149,7 @@ class RpcClient:
 
         #: True while the primary URL is the active provider.
         self._active_is_primary = True
+        self._provider_generation = 0
         #: Consecutive successful calls served by the fallback (drives probing).
         self._fallback_success_streak = 0
         #: Set once the fallback is healthy long enough to probe the primary.
@@ -195,6 +196,11 @@ class RpcClient:
     def using_fallback(self) -> bool:
         """True once the client failed over to the backup provider."""
         return not self._active_is_primary
+
+    @property
+    def provider_generation(self) -> int:
+        """Monotonic selection epoch; a batch spanning a switch must retry."""
+        return self._provider_generation
 
     # ------------------------------------------------------------------
     # Backoff schedule (kept as a property so tests can assert the policy)
@@ -383,6 +389,7 @@ class RpcClient:
                     self._fallback_url,
                 )
                 self._active_is_primary = False
+                self._provider_generation += 1
                 self._fallback_success_streak = 0
                 self.consecutive_failures = 0
                 # Remember *when* we left the primary and how badly it was
@@ -453,6 +460,7 @@ class RpcClient:
             if response.status_code == 200 and "error" not in response.json():
                 logger.info("RPC primary recovered — switching back to %s", self._url)
                 self._active_is_primary = True
+                self._provider_generation += 1
                 self._fallback_success_streak = 0
                 self._fallback_since = None
                 self._fallback_rate_limit_strikes = 0
