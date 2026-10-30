@@ -58,7 +58,7 @@ async def _rules_runner_loop() -> None:
 
 app = FastAPI(
     title="Arc Sentinel",
-    description="Non-custodial, read-only monitoring of Agent wallet USDC flows on Arc mainnet.",
+    description="Read-only monitoring of wallet USDC flows on a configured Arc network.",
     version="0.1.0",
     lifespan=lifespan,
 )

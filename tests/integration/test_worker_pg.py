@@ -26,7 +26,7 @@ import respx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.db.models import Agent, IndexerState, TokenTransfer, Transaction
+from app.db.models import Agent, IndexedBlock, IndexerState, TokenTransfer, Transaction
 from app.indexer.decode import TRANSFER_EVENT_SIG
 from app.indexer.rpc_client import RpcClient
 from app.indexer.worker import IndexerWorker
@@ -64,6 +64,8 @@ def _tx(tx_hash: str, sender: str, to: str | None, input_hex: str) -> dict[str, 
 def _receipt(tx_hash: str, status: str) -> dict[str, Any]:
     return {
         "transactionHash": tx_hash,
+        "blockHash": "0x" + format(BLOCK_WITH_TXS, "064x"),
+        "blockNumber": hex(BLOCK_WITH_TXS),
         "status": status,
         "gasUsed": "0x5208",  # 21_000
         "effectiveGasPrice": "0x3b9aca00",  # 10**9 wei → fee = 0.000021 ETH
@@ -73,8 +75,11 @@ def _receipt(tx_hash: str, status: str) -> dict[str, Any]:
 def _block(number: int, txs: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "number": hex(number),
+        "hash": "0x" + format(number, "064x"),
+        "parentHash": "0x" + format(max(0, number - 1), "064x"),
         "timestamp": hex(BLOCK_TS_BASE + number),
-        "transactions": txs,
+        "transactions": [dict(tx, blockNumber=hex(number),
+                              blockHash="0x" + format(number, "064x")) for tx in txs],
     }
 
 
@@ -86,6 +91,7 @@ TRANSFER_LOG: dict[str, Any] = {
     "transactionHash": TX_TRANSFER,
     "logIndex": "0x0",
     "blockNumber": hex(BLOCK_WITH_TXS),
+    "blockHash": "0x" + format(BLOCK_WITH_TXS, "064x"),
 }
 
 BLOCK_101: dict[str, Any] = _block(
@@ -114,8 +120,10 @@ def _rpc_handler(head_state: dict[str, int]):
         method = payload["method"]
         params = payload["params"]
 
-        if method == "eth_blockNumber":
-            result: Any = hex(head_state["head"])
+        if method == "eth_chainId":
+            result: Any = hex(CHAIN_ID)
+        elif method == "eth_blockNumber":
+            result = hex(head_state["head"])
         elif method == "eth_getBlockByNumber":
             number = int(params[0], 16)
             result = BLOCK_101 if number == BLOCK_WITH_TXS else _block(number, [])
@@ -124,7 +132,9 @@ def _rpc_handler(head_state: dict[str, int]):
         elif method == "eth_getTransactionByHash":
             result = tx_by_hash.get(params[0])
         elif method == "eth_getLogs":
-            result = [TRANSFER_LOG]
+            request_filter = params[0]
+            result = ([TRANSFER_LOG] if int(request_filter["fromBlock"], 16)
+                      <= BLOCK_WITH_TXS <= int(request_filter["toBlock"], 16) else [])
         else:
             raise AssertionError(f"unexpected RPC method {method!r}")
 
@@ -225,6 +235,8 @@ async def test_poll_cycle_indexes_then_stays_idempotent(
             state = session.get(IndexerState, CHAIN_ID)
             assert state is not None
             assert state.last_indexed_block == 101
+            assert session.get(IndexedBlock, (CHAIN_ID, 100)).is_anchor is True
+            assert session.get(IndexedBlock, (CHAIN_ID, 101)).is_anchor is False
 
         # --- third poll: same head → already up to date, zero writes ---
         third = await worker.poll_once()

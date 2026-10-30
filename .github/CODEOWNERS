@@ -1,0 +1,9 @@
+# Routing only until GitHub requires Code Owner review on main.
+# Authors cannot approve their own PR; add another eligible maintainer before
+# requiring this review in a single-maintainer repository.
+/AGENTS.md @ChuLiYu
+/.agents/ @ChuLiYu
+/.codex/ @ChuLiYu
+/docs/components.json @ChuLiYu
+/scripts/project_check.py @ChuLiYu
+/.github/ @ChuLiYu

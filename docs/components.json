@@ -1,0 +1,119 @@
+{
+  "components": [
+    {
+      "id": "indexer",
+      "paths": [
+        "app/indexer/**"
+      ],
+      "doc": "app/indexer/README.md",
+      "tests": [
+        "tests/unit/test_worker.py",
+        "tests/unit/test_rpc_client.py",
+        "tests/integration/test_indexer_recovery_pg.py"
+      ]
+    },
+    {
+      "id": "api",
+      "paths": [
+        "app/api/**"
+      ],
+      "doc": "app/api/README.md",
+      "tests": [
+        "tests/integration/test_api.py"
+      ]
+    },
+    {
+      "id": "database",
+      "paths": [
+        "app/db/**",
+        "alembic.ini"
+      ],
+      "doc": "app/db/README.md",
+      "tests": [
+        "tests/integration/test_worker_pg.py",
+        "tests/integration/test_migrations_pg.py"
+      ]
+    },
+    {
+      "id": "rules",
+      "paths": [
+        "app/rules/**"
+      ],
+      "doc": "app/rules/README.md",
+      "tests": [
+        "tests/unit/test_rules.py",
+        "tests/unit/test_rules_runner.py",
+        "tests/integration/test_rules_runner_pg.py"
+      ]
+    },
+    {
+      "id": "dashboard",
+      "paths": [
+        "app/dashboard/**"
+      ],
+      "doc": "app/dashboard/README.md",
+      "tests": [
+        "tests/integration/test_api.py"
+      ]
+    },
+    {
+      "id": "runtime",
+      "paths": [
+        "app/config.py",
+        "app/main.py",
+        "app/__init__.py",
+        "Dockerfile",
+        ".dockerignore",
+        ".env.example",
+        "docker-compose*.yml",
+        "Caddyfile",
+        "pyproject.toml",
+        "uv.lock",
+        ".gitignore"
+      ],
+      "doc": "docs/components/RUNTIME.md",
+      "tests": [
+        "tests/unit/test_config.py",
+        "tests/integration/test_api.py"
+      ]
+    },
+    {
+      "id": "testing",
+      "paths": [
+        "tests/**"
+      ],
+      "doc": "docs/TESTING.md",
+      "tests": [
+        "tests/unit",
+        "tests/integration",
+        "tests/tooling"
+      ]
+    },
+    {
+      "id": "automation",
+      "paths": [
+        "scripts/**",
+        ".github/**",
+        ".agents/**",
+        "AGENTS.md",
+        "docs/components.json",
+        ".codex/**"
+      ],
+      "doc": "docs/WORKFLOW.md",
+      "tests": [
+        "tests/tooling"
+      ]
+    }
+  ],
+  "archived_documents": [
+    "docs/SPEC-v1.0-2026-09-16.md",
+    "docs/EXECUTION-PROMPT.md"
+  ],
+  "required_sections": [
+    "Flow",
+    "Constraints and decisions",
+    "Pitfalls",
+    "Backlog",
+    "Acceptance scenarios"
+  ]
+}

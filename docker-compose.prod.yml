@@ -1,15 +1,4 @@
-# Arc Sentinel PRODUCTION compose (SPEC §6/§11.1) — OCI Always Free single VM.
-# Used by deploy.yml on the VM; reads the rendered .env (GitHub Secrets →
-# deploy writes .env). docker-compose.yml stays the local-dev variant.
-#
-# Production specifics vs dev:
-#   * env_file: .env             → all SPEC §17 vars come from the rendered file
-#   * DATABASE_URL pinned to the `postgres` service (not localhost)
-#   * ARC_MAINNET_RPC_URL        → primary (Alchemy)
-#   * ARC_MAINNET_RPC_FALLBACK_URL → dRPC backup (Phase 2.5)
-#   * SENTINEL_API_KEY_SALT      → hash salt for write-scope API keys
-#   * CHAIN_ID=5042 mainnet; CI/tests use testnet only.
-
+# Pilot stack; see docs/RUNBOOK.md. Host configuration is pre-provisioned.
 services:
   postgres:
     image: postgres:16-alpine
@@ -27,27 +16,22 @@ services:
       retries: 5
 
   indexer:
-    image: ghcr.io/${GITHUB_REPOSITORY:-arc-sentinel/arc-sentinel}:latest
+    image: ${SENTINEL_IMAGE:?set SENTINEL_IMAGE to a tested commit tag or digest}
     restart: unless-stopped
-    env_file: .env
+    env_file: .env.production
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-sentinel}
-      ARC_MAINNET_RPC_URL: ${ARC_MAINNET_RPC_URL:?set ARC_MAINNET_RPC_URL in .env}
-      ARC_MAINNET_RPC_FALLBACK_URL: ${ARC_MAINNET_RPC_FALLBACK_URL:-}
-      CHAIN_ID: ${CHAIN_ID:-5042}
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["uv", "run", "python", "-m", "app.indexer.worker"]
+    command: ["python", "-m", "app.indexer.worker"]
 
   api:
-    image: ghcr.io/${GITHUB_REPOSITORY:-arc-sentinel/arc-sentinel}:latest
+    image: ${SENTINEL_IMAGE:?set SENTINEL_IMAGE to a tested commit tag or digest}
     restart: unless-stopped
-    env_file: .env
+    env_file: .env.production
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-sentinel}
-      ARC_MAINNET_RPC_URL: ${ARC_MAINNET_RPC_URL:?}
-      SENTINEL_API_KEY_SALT: ${SENTINEL_API_KEY_SALT:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -55,6 +39,8 @@ services:
       - "8000"
 
   caddy:
+    environment:
+      ARC_SENTINEL_DOMAIN: ${ARC_SENTINEL_DOMAIN:?set the public hostname}
     image: caddy:2-alpine
     restart: unless-stopped
     ports:

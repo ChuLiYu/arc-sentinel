@@ -8,7 +8,10 @@ dist/
 .github/
 docs/
 tests/
-.env
+.env*
+.serena/
+.coverage*
+pgdata/
 *.md
 .gitignore
 README.md

@@ -47,9 +47,11 @@ class Settings(BaseSettings):
         default="https://rpc.testnet.arc.io",
         validation_alias=AliasChoices("ARC_TESTNET_RPC_URL", "TESTNET_RPC_URL"),
     )
-    chain_id: int = 5042002
-    poll_interval_seconds: float = 3.0
-    confirmations: int = 2  # only index up to head - N blocks
+    chain_id: int = Field(default=5042002, ge=1, le=2**31 - 1)
+    poll_interval_seconds: float = Field(default=3.0, gt=0)
+    confirmations: int = Field(default=2, ge=0)
+    # Inclusive first block for a NEW database; an existing checkpoint wins.
+    start_block: int | None = Field(default=None, ge=0)
 
     # --- Indexer RPC client (SPEC §2/§4/§13/§20.7) ----------------------
     rpc_timeout_seconds: float = 15.0
@@ -65,11 +67,12 @@ class Settings(BaseSettings):
     # be probed again (extended after a 429 storm), preventing ping-ponging.
     rpc_min_fallback_stay_seconds: float = 120.0
     # Alchemy Free tier caps eth_getLogs block range at 10; use a small chunk.
-    rpc_logs_max_range_size: int = 10  # eth_getLogs chunk width (blocks)
+    rpc_logs_max_range_size: int = Field(default=10, ge=1)
     # SPEC §20.7 — one catch-up cycle indexes at most this many blocks so a big
     # backlog never exhausts a free-tier provider's CU budget in a single poll.
     max_blocks_per_cycle: int = Field(
         default=80,
+        ge=1,
         validation_alias=AliasChoices("MAX_BLOCKS_PER_CYCLE"),
     )
     usdc_address: str = "0x3600000000000000000000000000000000000000"
