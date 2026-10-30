@@ -2,6 +2,20 @@
 
 [Project map](INDEX.md)
 
+## Bounded fork diagnosis and recovery state — 2026-10-30
+
+Local follow-on slice on `refactor/flywheel-m1-foundation`, based on `3b2e8cb`. M1 now diagnoses a checkpoint fork within `REORG_MAX_DEPTH` and durably stops ingestion with a visible recovery reason. It preserves raw rows, the journal and checkpoint. This does not implement rollback, replay or derived-data repair.
+
+| Check | Result | Boundary |
+| --- | --- | --- |
+| `./scripts/verify.sh` | Mapping/links and Ruff passed; **249 tests passed**, no skips (23.96 seconds) | Disposable PostgreSQL and mocked RPC; no live-chain verification |
+| Fork/recovery acceptance | Included above | Depths 1/3/10, exact window boundary, exceeded window, journal gap/history boundary, legacy checkpoint, restart latch, unstable provider view and provider failover |
+| API and migration acceptance | Included above | Recovery stays degraded at zero lag or with RPC down; populated upgrade preserves rows; `0003` downgrade/upgrade preserves checkpoint and journal but intentionally loses diagnostic fields |
+| Local image `arc-sentinel:recovery-state` | Build and network-disabled smoke passed | UID 10001, application/model import and migration `0003` packaged; no registry publication |
+| Independent read-only review | No actionable findings | Reviewer ran mapping/link checks, whitespace check, targeted Ruff and **10 config tests**; implementer ran PostgreSQL suites and container checks |
+
+Recovery timestamps and diagnoses survive worker restart and a provider returning to the previously stored branch. No automatic reset is provided. Reads may still expose pre-repair branch data; `/health` keeps HTTP 200 and reports `degraded` in its body. See [runbook](RUNBOOK.md) before operating a latched indexer or downgrading the schema. Remote CI for this follow-on slice has not been run; no live RPC, signing, production migration or deployment was performed.
+
 ## Flywheel refactor and M1 foundation — 2026-10-30
 
 Local candidate on `refactor/flywheel-m1-foundation`, based on `6751283cd95f55567b35533168adeb9539450567`. The pre-change full baseline passed 204 tests. This change retains the stack/router/component ownership, adds authority/requirement tracing and strengthens maintained-document validation, then implements the first M1 lineage slice.

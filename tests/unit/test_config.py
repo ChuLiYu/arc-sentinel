@@ -9,6 +9,7 @@ from app.config import Settings
     {"start_block": -1}, {"confirmations": -1}, {"max_blocks_per_cycle": 0},
     {"rpc_logs_max_range_size": 0}, {"poll_interval_seconds": 0},
     {"chain_id": 0}, {"chain_id": 2**31},
+    {"reorg_max_depth": 0}, {"reorg_max_depth": -1}, {"reorg_max_depth": 10001},
 ])
 def test_invalid_indexing_bounds_fail_at_startup(overrides):
     with pytest.raises(ValidationError):

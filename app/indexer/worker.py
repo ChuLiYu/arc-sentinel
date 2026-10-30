@@ -33,14 +33,14 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
-from app.db.models import Agent, IndexedBlock, TokenTransfer, Transaction
+from app.db.models import Agent, IndexedBlock, IndexerState, TokenTransfer, Transaction
 from app.indexer.decode import (
     NUMERIC_38_MAX,
     TRANSFER_EVENT_SIG,
@@ -337,6 +337,7 @@ class IndexerWorker:
         logs_max_range_size: int = 2000,
         max_blocks_per_cycle: int = 80,
         start_block: int | None = None,
+        reorg_max_depth: int = 64,
     ) -> None:
         if not 1 <= chain_id <= 2**31 - 1:
             raise ValueError("chain_id must fit the positive PostgreSQL INTEGER range")
@@ -344,6 +345,8 @@ class IndexerWorker:
             raise ValueError("confirmations and start_block must be nonnegative")
         if min(logs_max_range_size, max_blocks_per_cycle, poll_interval_seconds) <= 0:
             raise ValueError("batch sizes and poll interval must be positive")
+        if not 1 <= reorg_max_depth <= 10000:
+            raise ValueError("reorg_max_depth must be between 1 and 10000")
         self._factory = session_factory
         self._rpc = rpc
         self._chain_id = chain_id
@@ -353,6 +356,7 @@ class IndexerWorker:
         self._logs_max_range_size = logs_max_range_size
         self._max_blocks_per_cycle = max_blocks_per_cycle
         self._start_block = start_block
+        self._reorg_max_depth = reorg_max_depth
 
     @classmethod
     def from_settings(
@@ -371,6 +375,7 @@ class IndexerWorker:
             logs_max_range_size=settings.rpc_logs_max_range_size,
             max_blocks_per_cycle=settings.max_blocks_per_cycle,
             start_block=settings.start_block,
+            reorg_max_depth=settings.reorg_max_depth,
         )
 
     # ------------------------------------------------------------------
@@ -441,12 +446,18 @@ class IndexerWorker:
 
             previous = None
             if last is not None:
+                state = session.get(IndexerState, self._chain_id)
+                if state.recovery_reason is not None:
+                    raise RpcError(f"recovery required: {state.recovery_reason}")
                 saved = session.get(IndexedBlock, (self._chain_id, last))
                 if saved is None:
-                    raise RpcError("recovery required: legacy checkpoint has no block hash")
+                    await self._validate_view(generation, None)
+                    self._require_recovery(session, "legacy_checkpoint")
                 previous = await self._read_header(last)
                 if previous.hash != saved.block_hash:
-                    raise RpcError("recovery required: checkpoint is no longer canonical")
+                    reason, ancestor = await self._find_ancestor(session, previous)
+                    await self._validate_view(generation, previous)
+                    self._require_recovery(session, reason, ancestor)
 
             if last is None and self._start_block is None:
                 anchor = await self._read_header(safe_head)
@@ -550,6 +561,39 @@ class IndexerWorker:
     async def _read_header(self, number: int) -> BlockHeader:
         block = await self._rpc.eth_get_block_by_number(number, full_transactions=False)
         return BlockHeader.parse(block, number)
+
+    async def _find_ancestor(
+        self, session: Session, tip: BlockHeader
+    ) -> tuple[str, int | None]:
+        """Walk a contiguous provider branch; never search past known provenance."""
+        child = tip
+        for depth in range(self._reorg_max_depth + 1):
+            saved = session.get(IndexedBlock, (self._chain_id, child.number))
+            if saved is None:
+                return "journal_gap", None
+            if saved.block_hash == child.hash:
+                return "checkpoint_fork", child.number
+            if saved.is_anchor or child.number == 0:
+                return "history_boundary", None
+            if depth == self._reorg_max_depth:
+                break
+            parent = await self._read_header(child.number - 1)
+            if child.parent_hash != parent.hash:
+                raise RpcError("inconsistent ancestor search; batch must be retried")
+            child = parent
+        return "rollback_window_exceeded", None
+
+    def _require_recovery(
+        self, session: Session, reason: str, ancestor: int | None = None
+    ) -> NoReturn:
+        """Latch only validated diagnostics, under the writer lock before any raw writes."""
+        state = session.get(IndexerState, self._chain_id)
+        state.recovery_reason = reason
+        state.recovery_ancestor_block = ancestor
+        state.recovery_detected_at = datetime.now(UTC)
+        session.commit()
+        detail = f"; common ancestor {ancestor}" if ancestor is not None else ""
+        raise RpcError(f"recovery required: {reason}{detail}")
 
     async def _validate_view(self, generation: int, boundary: BlockHeader | None) -> None:
         if boundary is not None and await self._read_header(boundary.number) != boundary:

@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     confirmations: int = Field(default=2, ge=0)
     # Inclusive first block for a NEW database; an existing checkpoint wins.
     start_block: int | None = Field(default=None, ge=0)
+    # Bound diagnostic ancestor search; this does not enable automatic rollback.
+    reorg_max_depth: int = Field(default=64, ge=1, le=10000)
 
     # --- Indexer RPC client (SPEC §2/§4/§13/§20.7) ----------------------
     rpc_timeout_seconds: float = 15.0

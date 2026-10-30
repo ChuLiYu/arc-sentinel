@@ -10,6 +10,7 @@ seeds one agent, then exercises the FastAPI app through httpx TestClient with:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import httpx
@@ -19,7 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.api.deps import _hash_api_key
 from app.config import Settings
-from app.db.models import Agent, ApiKey, Transaction
+from app.db.models import Agent, ApiKey, IndexerState, Transaction
 from app.main import app
 
 API_KEY = "test-write-key-123456"
@@ -193,6 +194,41 @@ async def test_health_reports_lag(client: httpx.AsyncClient, monkeypatch: pytest
     body = resp.json()
     assert "status" in body
     assert body["rpc_ok"] is True
+
+
+@pytest.mark.parametrize(("reason", "rpc_down"), [
+    (None, False), ("checkpoint_fork", False), ("rollback_window_exceeded", True),
+])
+async def test_health_exposes_durable_recovery_even_at_zero_lag(
+    client, migrated_db, monkeypatch, reason, rpc_down,
+):
+    settings = Settings(
+        _env_file=None, rpc_url=RPC_URL, rpc_fallback_url="", rpc_max_retries=0, chain_id=2,
+    )
+    monkeypatch.setattr("app.main.get_settings", lambda: settings)
+    detected = datetime(2026, 10, 30, tzinfo=UTC) if reason else None
+    ancestor = 99 if reason == "checkpoint_fork" else None
+    with migrated_db() as session:
+        session.merge(IndexerState(
+            chain_id=2, last_indexed_block=100, recovery_reason=reason,
+            recovery_ancestor_block=ancestor, recovery_detected_at=detected,
+        ))
+        session.commit()
+    with respx.mock() as router:
+        response = (httpx.Response(503) if rpc_down else httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": 1, "result": "0x64"},
+        ))
+        router.post(RPC_URL).mock(return_value=response)
+        resp = await client.get("/api/v1/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == ("degraded" if reason else "ok")
+    assert body["rpc_ok"] is not rpc_down
+    assert body["indexer"]["lag_blocks"] == (None if rpc_down else 0)
+    assert body["indexer"]["recovery_required"] is (reason is not None)
+    assert body["indexer"]["recovery_reason"] == reason
+    assert body["indexer"]["common_ancestor_block"] == ancestor
+    assert bool(body["indexer"]["recovery_detected_at"]) is bool(detected)
 
 
 async def test_dashboard_renders(

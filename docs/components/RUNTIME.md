@@ -30,6 +30,8 @@ Settings, application lifecycle, packaging, containers and network configuration
 
 Python 3.12 and the frozen uv lockfile are the reproducible runtime. The container uses UID 10001; pinned uv avoids installer drift, while base image digests remain unpinned. Arc native-gas assumptions are chain-specific. Revisit portability only with chain-specific fixtures and schema decisions, not a renamed environment variable.
 
+`REORG_MAX_DEPTH` defaults to 64 and accepts 1–10000; it bounds diagnostic ancestor reads and does not activate rollback. Apply migration `0003` before running this API/worker revision. Health adds durable recovery reason, ancestor and detection time; any recovery latch forces `degraded` even at zero lag or during an RPC outage. The HTTP status remains 200, so operational consumers must inspect the response body. See the [indexer protocol](../../app/indexer/README.md) and [API](../../app/api/README.md).
+
 ## Pitfalls
 
 The local public-registry credential helper failed during verification; an empty temporary Docker config against the same daemon worked without changing stored credentials. Do not bake filled env files into images. Non-root import success is not a live deployment or proof of RPC connectivity.
@@ -40,7 +42,7 @@ The local public-registry credential helper failed during verification; an empty
 
 ## Acceptance scenarios
 
-- Given invalid start/confirmation/batch bounds, when settings initialize, then startup rejects them. Evidence: `test_invalid_indexing_bounds_fail_at_startup` below.
+- Given invalid start/confirmation/batch/reorg-search bounds, when settings initialize, then startup rejects them. Evidence: `test_invalid_indexing_bounds_fail_at_startup` below.
 - Given a frozen image build, when importing the application as the default user, then import succeeds as UID 10001 with migrations present. Evidence and reproduction: [verification](../VERIFICATION.md).
 - Provider failure recovery and multi-day deployed operation remain unverified.
 

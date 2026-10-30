@@ -74,11 +74,14 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # ---------------------------------------------------------------------------
 @api.get("/health")
 async def health(session: Session = Depends(get_session)) -> dict[str, Any]:
-    """Liveness check: indexer lag in blocks vs. current RPC head (SPEC §8)."""
+    """Report lag and durable recovery state; a near-head fork is still degraded."""
     settings = get_settings()
 
     row = session.get(IndexerState, settings.chain_id)
     last = row.last_indexed_block if row else None
+    recovery_reason = row.recovery_reason if row else None
+    ancestor = row.recovery_ancestor_block if row else None
+    detected_at = row.recovery_detected_at if row else None
     session.close()
 
     lag: int | None = None
@@ -94,11 +97,18 @@ async def health(session: Session = Depends(get_session)) -> dict[str, Any]:
     if last is not None and head is not None:
         lag = max(0, head - last)
 
-    indexer_ok = last is not None and lag is not None and lag <= 20
+    indexer_ok = (last is not None and lag is not None and lag <= 20
+                  and recovery_reason is None)
     return {
         "status": "ok" if (rpc_ok and indexer_ok) else "degraded",
         "chain_id": settings.chain_id,
-        "indexer": {"last_indexed_block": last, "rpc_head": head, "lag_blocks": lag},
+        "indexer": {
+            "last_indexed_block": last, "rpc_head": head, "lag_blocks": lag,
+            "recovery_required": recovery_reason is not None,
+            "recovery_reason": recovery_reason,
+            "common_ancestor_block": ancestor,
+            "recovery_detected_at": detected_at,
+        },
         "rpc_ok": rpc_ok,
     }
 

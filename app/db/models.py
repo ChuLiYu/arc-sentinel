@@ -197,6 +197,9 @@ class IndexerState(Base):
 
     chain_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     last_indexed_block: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    recovery_reason: Mapped[str | None] = mapped_column(Text)
+    recovery_ancestor_block: Mapped[int | None] = mapped_column(BigInteger)
+    recovery_detected_at: Mapped[dt.datetime | None] = mapped_column(TIMESTAMPTZ)
     updated_at: Mapped[dt.datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=text("now()")
     )

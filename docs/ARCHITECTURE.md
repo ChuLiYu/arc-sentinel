@@ -36,8 +36,14 @@ Adopted 2026-10-30 as the first M1 slice. The journal and checkpoint commit atom
 
 Transparent provider switching during a batch was rejected: a preflight chain-ID check cannot protect later calls. A provider generation counter rejects a cycle that changes providers, even if it returns to primary before validation. Rechecking chain ID and boundary at the end complements the counter. The next clean cycle may commit from a stable fallback. This costs extra header/chain calls and retries, and empty-wallet ranges also fetch headers to preserve lineage. Measure RPC cost before tuning away checks.
 
-Automatic ancestor search/rollback is deferred until raw and derived-data repair has a tested recovery protocol. A fork or legacy checkpoint currently raises a recovery-required worker error without writing. API lag health is not a persisted recovery indicator. See [M1 remaining gates](ROADMAP.md) and the [operator procedure](RUNBOOK.md).
+Automatic rollback is deferred until raw and derived-data repair has a tested recovery protocol. Bounded ancestor search and durable recovery latching extend this decision below. See [M1 remaining gates](ROADMAP.md) and the [operator procedure](RUNBOOK.md).
+
+## ADR 007: diagnose forks and latch recovery before repair
+
+Adopted 2026-10-30. A mismatched checkpoint searches backward only through a contiguous provider branch and known journal provenance, bounded by `REORG_MAX_DEPTH`. Rechecking the checkpoint header, chain and provider generation rejects mixed views before persisting a reason, optional ancestor and detection time under the writer lock. Legacy height-only state is also latched, without fabricating hashes. Transient input/view errors remain retryable.
+
+This status transaction intentionally commits no ledger, journal or height change. A durable latch survives worker restart or return to the old provider branch; otherwise near-head lag could look healthy despite a fork. Health therefore reports `degraded` for a latch, including during RPC failure. Automatic latch clearing was rejected until canonical replay and derived-data repair are implemented. There is no reset endpoint. Operators preserve the original database and use the reviewed separate-database rebuild procedure; a found ancestor is diagnostic, not permission to delete rows. Existing ledger reads still expose the stored pre-repair view.
 
 ## Remaining correctness boundaries
 
-A hash journal and inconsistency refusal now exist; automatic reorg repair and persisted recovery readiness do not. A transaction has one agent projection, rules execute in API memory, read routes are public, and native-gas valuation is Arc-specific. These are tracked as launch gates in the roadmap, rather than hidden behind a “production-ready” label.
+A hash journal, bounded fork diagnosis and persisted recovery stop now exist; automatic reorg repair does not. Other retryable indexing failures may still appear only in logs, and a null latch does not establish freshness. A transaction has one agent projection, rules execute in API memory, read routes are public, and native-gas valuation is Arc-specific. These are tracked as launch gates in the roadmap, rather than hidden behind a “production-ready” label.

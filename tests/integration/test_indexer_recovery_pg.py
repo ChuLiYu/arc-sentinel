@@ -64,6 +64,9 @@ def rpc_handler(fault):
             number = int(params[0], 16)
             block_reads[number] = block_reads.get(number, 0) + 1
             hash_ = block_hash(number)
+            ancestor = fault.get("fork_after")
+            if ancestor is not None and number > ancestor:
+                hash_ = block_hash(number + 10000)
             if fault.get("checkpoint_fork") and number == 101:
                 hash_ = block_hash(999)
             if (fault.get("boundary_changed") and number == fault.get("head", 103) - 2
@@ -77,6 +80,10 @@ def rpc_handler(fault):
                     "blockHash": hash_, "blockNumber": params[0],
                 }] if number == 101 else [],
             }
+            if ancestor is not None and number - 1 > ancestor:
+                result["parentHash"] = block_hash(number - 1 + 10000)
+            if fault.get("search_gap") == number:
+                result["parentHash"] = block_hash(999)
             if fault.get("broken_parent") and number == 101:
                 result["parentHash"] = block_hash(999)
             if fault.get("internal_parent") and number == 102:
@@ -153,6 +160,169 @@ def worker(db, rpc, **kwargs):
     return IndexerWorker(
         session_factory=db, rpc=rpc, chain_id=CHAIN, usdc_address=TOKEN, **kwargs
     )
+
+
+async def seed_checkpoint_history(db, rpc):
+    """Keep real ingested rows, extending the known fixture branch to block 120."""
+    await worker(db, rpc).poll_once()
+    with db() as session:
+        for number in range(102, 121):
+            session.add(IndexedBlock(
+                chain_id=CHAIN, block_number=number, block_hash=block_hash(number),
+                parent_hash=block_hash(number - 1),
+                block_time=datetime.fromtimestamp(1750000101, UTC),
+                observed_provider="primary",
+            ))
+        set_last_indexed_block(session, CHAIN, 120)
+        session.commit()
+
+
+@pytest.mark.parametrize("depth", [1, 3, 10])
+@respx.mock
+async def test_fork_search_records_ancestor_and_latches_across_restart(db, depth):
+    fault = {}
+    respx.post(URL).mock(side_effect=rpc_handler(fault))
+    async with RpcClient(url=URL, max_retries=0) as rpc:
+        await seed_checkpoint_history(db, rpc)
+        fault.update(fork_after=120 - depth, head=122)
+        with pytest.raises(RpcError, match=f"common ancestor {120 - depth}"):
+            await worker(db, rpc, reorg_max_depth=10).poll_once()
+        assert_state(db, 120, 1, 1)
+        with db() as session:
+            state = session.get(IndexerState, CHAIN)
+            assert state.recovery_reason == "checkpoint_fork"
+            assert state.recovery_ancestor_block == 120 - depth
+            detected = state.recovery_detected_at
+            assert detected is not None
+        # Restoring the old provider branch must not silently clear the latch.
+        fault.clear()
+        with pytest.raises(RpcError, match="recovery required"):
+            await worker(db, rpc).poll_once()
+        with db() as session:
+            assert session.get(IndexerState, CHAIN).recovery_detected_at == detected
+        assert_state(db, 120, 1, 1)
+
+
+@respx.mock
+async def test_fork_deeper_than_window_records_no_ancestor(db):
+    fault = {}
+    calls = []
+    handler = rpc_handler(fault)
+
+    def record(request):
+        payload = json.loads(request.content)
+        if payload["method"] == "eth_getBlockByNumber":
+            calls.append(int(payload["params"][0], 16))
+        return handler(request)
+
+    respx.post(URL).mock(side_effect=record)
+    async with RpcClient(url=URL, max_retries=0) as rpc:
+        await seed_checkpoint_history(db, rpc)
+        calls.clear()
+        fault.update(fork_after=109, head=122)
+        with pytest.raises(RpcError, match="rollback_window_exceeded"):
+            await worker(db, rpc, reorg_max_depth=10).poll_once()
+    assert min(calls) == 110
+    assert len(calls) <= 12  # checkpoint, ten ancestors, final checkpoint reread
+    with db() as session:
+        state = session.get(IndexerState, CHAIN)
+        assert state.recovery_reason == "rollback_window_exceeded"
+        assert state.recovery_ancestor_block is None
+    assert_state(db, 120, 1, 1)
+
+
+@pytest.mark.parametrize("boundary", ["anchor", "gap"])
+@respx.mock
+async def test_search_stops_at_provenance_boundary(db, boundary):
+    fault = {}
+    respx.post(URL).mock(side_effect=rpc_handler(fault))
+    async with RpcClient(url=URL, max_retries=0) as rpc:
+        await seed_checkpoint_history(db, rpc)
+        with db() as session:
+            if boundary == "gap":
+                session.delete(session.get(IndexedBlock, (CHAIN, 119)))
+            session.commit()
+        fault.update(fork_after=99, head=122)
+        reason = "history_boundary" if boundary == "anchor" else "journal_gap"
+        with pytest.raises(RpcError, match=reason):
+            await worker(db, rpc).poll_once()
+    with db() as session:
+        state = session.get(IndexerState, CHAIN)
+        assert state.recovery_reason == reason
+        assert state.recovery_ancestor_block is None
+    assert_state(db, 120, 1, 1)
+
+
+@pytest.mark.parametrize("failure", ["parent", "tip", "missing", "chain"])
+@respx.mock
+async def test_unstable_ancestor_search_does_not_persist_recovery(db, failure):
+    fault = {}
+    handler = rpc_handler(fault)
+    tip_reads = 0
+
+    def unstable(request):
+        nonlocal tip_reads
+        payload = json.loads(request.content)
+        if "fork_after" in fault:
+            if payload["method"] == "eth_getBlockByNumber":
+                number = int(payload["params"][0], 16)
+                if number == 120:
+                    tip_reads += 1
+                    if failure == "tip" and tip_reads > 1:
+                        return rpc_handler({"head": 122})(request)
+                if number == 119 and failure == "missing":
+                    return httpx.Response(200, json={
+                        "jsonrpc": "2.0", "id": payload["id"], "result": None,
+                    })
+            elif payload["method"] == "eth_chainId" and failure == "chain" and tip_reads:
+                return httpx.Response(200, json={
+                    "jsonrpc": "2.0", "id": payload["id"], "result": "0x1",
+                })
+        return handler(request)
+
+    respx.post(URL).mock(side_effect=unstable)
+    async with RpcClient(url=URL, max_retries=0) as rpc:
+        await seed_checkpoint_history(db, rpc)
+        fault.update(fork_after=117, head=122)
+        if failure == "parent":
+            fault["search_gap"] = 119
+        with pytest.raises(RpcError):
+            await worker(db, rpc).poll_once()
+    with db() as session:
+        state = session.get(IndexerState, CHAIN)
+        assert state.recovery_reason is None
+        assert state.recovery_ancestor_block is None
+        assert state.recovery_detected_at is None
+    assert_state(db, 120, 1, 1)
+
+
+@respx.mock
+async def test_provider_switch_during_search_cannot_latch_recovery(db):
+    fault = {}
+    primary = rpc_handler(fault)
+    fallback_url = "https://search-fallback.invalid"
+
+    def primary_handler(request):
+        payload = json.loads(request.content)
+        if ("fork_after" in fault and payload["method"] == "eth_getBlockByNumber"
+                and int(payload["params"][0], 16) == 119):
+            return httpx.Response(503)
+        return primary(request)
+
+    respx.post(URL).mock(side_effect=primary_handler)
+    respx.post(fallback_url).mock(side_effect=rpc_handler(fault))
+    async with RpcClient(
+        url=URL, fallback_url=fallback_url, max_retries=0,
+        max_consecutive_failures=1, probe_after_successes=10000,
+    ) as rpc:
+        await seed_checkpoint_history(db, rpc)
+        fault.update(fork_after=117, head=122)
+        with pytest.raises(RpcError, match="provider/chain changed"):
+            await worker(db, rpc).poll_once()
+        assert rpc.provider_generation == 1
+    with db() as session:
+        assert session.get(IndexerState, CHAIN).recovery_reason is None
+    assert_state(db, 120, 1, 1)
 
 
 def assert_state(db, checkpoint, transactions, transfers):
@@ -254,10 +424,11 @@ async def test_legacy_height_only_checkpoint_requires_recovery(db):
         session.commit()
     respx.post(URL).mock(side_effect=rpc_handler({}))
     async with RpcClient(url=URL, max_retries=0) as rpc:
-        with pytest.raises(RpcError, match="legacy checkpoint"):
+        with pytest.raises(RpcError, match="legacy_checkpoint"):
             await worker(db, rpc).poll_once()
     with db() as session:
         assert session.get(IndexerState, CHAIN).last_indexed_block == 100
+        assert session.get(IndexerState, CHAIN).recovery_reason == "legacy_checkpoint"
         assert session.scalar(select(func.count()).select_from(IndexedBlock)) == 0
         assert session.scalar(select(func.count()).select_from(Transaction)) == 0
 
