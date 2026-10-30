@@ -20,7 +20,9 @@ Update behavior, invariants, interfaces, acceptance cases or operational consequ
 
 [verify.sh](../scripts/verify.sh) is the same local entrypoint. Pass `--base <ref>` to project_check for the full PR; default HEAD inspects current working/staged/untracked changes. CI uses the PR base or push-before SHA to find the common ancestor with HEAD; unrelated changes added to main after divergence are excluded. Both test and Docker jobs validate the same exact PR head. This does not test a synthetic merge result; keeping the branch updated or using a merge queue remains a separate integration decision. Missing/invalid base fails visibly. This bootstrap PR adds the initial component docs, so historical source changes in the same PR are covered.
 
-CD stays manually enabled with a tested revision, pinned SSH identity and pre-provisioned configuration; see [runbook](RUNBOOK.md). No automatic production rollout is added. Green CI is a prerequisite; protected-branch required checks are an administrator setting, not enforced merely by this YAML. Configure required checks `test` and `docker` on main before relying on merge prevention. [CODEOWNERS](../.github/CODEOWNERS) routes governance changes to @ChuLiYu. Add another eligible maintainer before enabling required Code Owner review: PR authors cannot approve themselves. Then require that review for rules, skills, registry, checker and workflows. Neither required checks nor required reviews are enabled by this patch. A contributor can weaken the gate in the same PR; repo-local rules are not a security boundary against authorized malicious changes. Review of the governing files and GitHub protection are separate controls; no account-wide setting is changed here.
+CD stays manually enabled with a tested revision, pinned SSH identity and pre-provisioned configuration; see [runbook](RUNBOOK.md). No automatic production rollout is added. Protected-branch required checks are a GitHub repository setting, not enforced merely by this YAML. On 2026-10-30, protection was enabled and confirmed for `main`: GitHub Actions checks `test` and `docker` are required, the branch must be up to date, administrators are included, and force pushes/deletion are disabled. This is repository-scoped; no account-wide setting was changed.
+
+[CODEOWNERS](../.github/CODEOWNERS) routes governance changes to @ChuLiYu. Required human/Code Owner approval remains disabled: add another eligible maintainer before requiring it because PR authors cannot approve themselves. A contributor can weaken the gate in the same PR; green checks do not establish that the gate was preserved. Review of the governing files and branch protection are separate controls. Reconfirm remote protection after transferring the repository or changing its plan/settings; this document records the dated observation, not a live monitor.
 
 ## Token discipline
 
@@ -42,7 +44,7 @@ Review on 2026-10-29 found that generic Markdown exemption also exempted agent p
 
 ## Backlog
 
-Enable appropriate GitHub protection when maintainer availability permits; evaluate token/time/rework measurements from comparable tasks before introducing more agents. No daily LLM scan or automatic deploy is configured. Add a merge-queue test only when that integration workflow is adopted.
+Enable required governance/Code Owner review when another eligible maintainer is available; required CI checks are already configured as recorded above. Evaluate token/time/rework measurements from comparable tasks before introducing more agents. No daily LLM scan or automatic deploy is configured. Add a merge-queue test only when that integration workflow is adopted.
 
 ## Acceptance scenarios
 

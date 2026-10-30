@@ -19,7 +19,18 @@ Regression demonstration before the M1 fix: five new cases failed on the old wor
 
 The [worked change path](ENGINEERING.md) was executed for the journal slice. The coverage inventory there retains every runtime component and identifies contract, knowledge and historical-input authority. Historical prototype rule approval is still unknown, and the [requirement trace](REQUIREMENTS.md) preserves that distinction.
 
-No live RPC, signing, cloud resources, production migration, remote push or deployment was used. The new candidate has no remote CI result yet; prior CI on `6751283` does not validate it. Automatic fork rollback, raw chain-scoped identities, wallet ledger and persisted recovery readiness remain M1 work. Schema upgrade alone cannot resume a legacy height-only checkpoint; see [runbook](RUNBOOK.md).
+At this initial local verification, no live RPC, signing, cloud resources, production migration, remote push or deployment was used; remote CI had not run for the candidate. Later delivery evidence is recorded separately below. Automatic fork rollback, raw chain-scoped identities, wallet ledger and persisted recovery readiness remain M1 work. Schema upgrade alone cannot resume a legacy height-only checkpoint; see [runbook](RUNBOOK.md).
+
+## Delivery resumption after directory migration — 2026-10-30
+
+The repository is now at `/Users/liyu/Personal/repos/arc-sentinel`. Resumed the already-reviewed local foundation at `3c5dcd3`; this delivery step changes operational documentation, not indexer behavior.
+
+- First canonical verification stopped at the Docker readiness check because the daemon socket was unavailable. Unit/tooling checks independently passed **194 tests**. After ensuring the existing OrbStack engine was ready, `./scripts/verify.sh` passed mapping/links, Ruff and **231 tests with no skips** (35.45 seconds), including disposable PostgreSQL suites.
+- `python3 scripts/project_check.py --base origin/main` passed for the complete candidate diff. These checks work from the new physical directory; no tracked runtime path change was needed.
+- GitHub confirmed repository-scoped protection on `main`: required GitHub Actions checks `test`/`docker`, strict up-to-date checking, administrator enforcement, force pushes disabled and branch deletion disabled. Required human/Code Owner approval remains off for the single-maintainer workflow. The [workflow](WORKFLOW.md) owns the current dated configuration and limitations.
+- The remote repository was confirmed private. Existing [PR #1](https://github.com/ChuLiYu/arc-sentinel/pull/1) is the delivery/remote-CI evidence location; check its head SHA and associated run rather than reusing an older green result. Local test evidence above does not assert a future GitHub Actions result.
+
+No live-chain request, signing, cloud deployment or production data migration was performed. M1 remains incomplete as listed in the [requirement trace](REQUIREMENTS.md); this delivery does not imply automatic fork repair or wallet-ledger support.
 
 ## Previous baseline — 2026-10-29
 
