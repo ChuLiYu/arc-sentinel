@@ -15,6 +15,43 @@ The project owner supplied a summary of the linked video on 2026-10-29. It is an
 | Scan daily for decay | Check changed paths on every PR/push. No daily model job is added: repeated scans without changes waste work and do not prove prose truth. Revisit scheduled checks for a concrete external dependency or operational requirement. |
 | More agents improve delivery | Use one scoped reviewer for material risks. Small deterministic edits may use disclosed self-review. Multiple agents add context and coordination cost; require a clear independent task. |
 
+## Authority and update map
+
+| Knowledge | Authority / maintainer | Change route | Validation and consumers |
+| --- | --- | --- | --- |
+| Product intent and exit gates | [Roadmap](ROADMAP.md); project owner | An explicit scope decision updates roadmap, then affected acceptance scenarios | [Requirement trace](REQUIREMENTS.md) distinguishes planned, implemented and observed behavior |
+| Local behavior and acceptance | Registry component document; component maintainer | Update intent/scenario before or alongside implementation and evidence; do not infer approval from a test | Component tests, review, and dated [verification](VERIFICATION.md) |
+| Machine contracts | [Contract authority index](CONTRACTS.md); named component | Edit actual schemas/models/settings, then migrations/consumers and owning knowledge | Contract index points to source; no hand-copied generated schemas |
+| Architecture decisions | [Architecture](ARCHITECTURE.md) for cross-component choices; component Constraints and decisions for local choices | Record status, alternatives, consequences and reconsideration trigger; historical rationale stays unknown when absent | Review affected component constraints and negative scenarios |
+| File ownership and archives | [components.json](components.json); automation | Change patterns/archive classification and workflow together | Checker rejects missing/ambiguous ownership, missing docs and invalid links |
+| Process and operational commands | [Workflow](WORKFLOW.md), [testing](TESTING.md), [runbook](RUNBOOK.md); corresponding component maintainers | Update command and its executable script/config together | Fixture tests, canonical verification, container checks where relevant |
+| External references and historical inputs | [References](REFERENCES.md), explicitly archived inputs | Preserve provenance; these cannot override current owner intent or contracts | Targeted official-source verification when adopting a new claim |
+
+Maintainer means the contributor responsible for the registry component in a change, not an invented staff assignment. English maintained documents are authoritative; translations, if introduced, link to them and synchronize through the same change. No separate translation tree currently exists.
+
+Resolve conflicts in this order: current explicit owner instruction; applicable project policy; approved roadmap/scenario intent; machine contract for actual interface shape; observed implementation and tests. If intent conflicts with behavior, record a defect or ask for the missing product decision. Do not silently change intent to match code. Archive links preserve history without granting execution authority.
+
+## Migration coverage (2026-10-30)
+
+This is the flywheel migration inventory, not a duplicate runtime architecture. Existing knowledge is retained unless a row says added. The registry/checker supplies exhaustive non-document path coverage; the table explains the knowledge route for each area.
+
+| Repository area | Status / authority | Synchronization and validation |
+| --- | --- | --- |
+| app/indexer, API, database, rules, dashboard | Retained five colocated component READMEs and [registry](components.json) | Direct source/test links; co-change and five-section gates |
+| app/config.py, app/main.py, package/lock, Docker/Compose/Caddy/environment example | Retained [runtime](components/RUNTIME.md) | Config tests, locked install, build/smoke; no live deployment inferred |
+| Database migrations and API schemas | Added [contract authority](CONTRACTS.md); existing models/routes/revisions retained | Append migrations; real PostgreSQL upgrade evidence; API tests |
+| Product purpose, domain rules and acceptance | Roadmap retained; added [trace/status index](REQUIREMENTS.md) | Existing scenarios linked; observed baseline distinguished from future gates |
+| Tests and fixtures | Retained [testing](TESTING.md) and pytest suites | Positive and negative evidence; no empty replacement framework |
+| scripts, .github, .agents, .codex, AGENTS.md | Retained [workflow](WORKFLOW.md); expanded checker to every maintained Markdown file | Temporary Git fixtures prove broken new knowledge links fail; policy documents cannot be archived |
+| docs, root README, architecture and decisions | Retained [single router](INDEX.md); authority/update map added here | Router/component backlinks and local links; no competing root router |
+| SPEC and execution prompt | Explicitly archived in registry; retained as historical input | Excluded from maintenance-link gate only; cannot exempt component or policy docs |
+| Generated artifacts, vendored code and dependencies | No checked-in generated API/SDK or vendored tree; uv.lock remains derived via package tooling | Future generators require reproducible command and freshness check before adoption |
+| External references, license and Git metadata | References retained; LICENSE intentionally outside component co-change | No owner files/credentials/history deleted; no public release or remote mutation |
+
+## Worked change path
+
+For M1 journal work: **Locate** indexer/database in the registry; **Load** their READMEs, CHAIN-CANONICAL and contract pointers; **Resolve** roadmap intent versus height-only observed state (journalling is only a partial M1 gate); **Implement** an additive migration and focused failure fixtures; **Synchronize** models, indexer/database/testing knowledge and roadmap status; **Validate** migration preservation, rollback/continuity failures, the full verification and scoped independent review. The evidence record states what actually ran. New document link fixtures exercise a failure in the knowledge architecture itself, rather than claiming that file presence proves semantic correctness.
+
 ## Minimum component knowledge
 
 Every registry component document has five sections, enforced for presence by CI:

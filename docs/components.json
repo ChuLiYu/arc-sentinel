@@ -104,6 +104,10 @@
       ]
     }
   ],
+  "archived_documents": [
+    "docs/SPEC-v1.0-2026-09-16.md",
+    "docs/EXECUTION-PROMPT.md"
+  ],
   "required_sections": [
     "Flow",
     "Constraints and decisions",

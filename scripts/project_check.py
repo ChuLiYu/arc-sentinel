@@ -57,7 +57,16 @@ def check(root: Path, base: str) -> tuple[list[str], list[str]]:
         "docs/ARCHITECTURE.md", "docs/ROADMAP.md", "docs/RUNBOOK.md",
         "docs/VERIFICATION.md", "docs/WORKFLOW.md", "docs/TESTING.md", "docs/ENGINEERING.md",
     }
-    documents |= {p for p in tracked if p.startswith(".agents/") and p.endswith(".md")}
+    required_documents = documents.copy() | {c["doc"] for c in components}
+    archives = set(registry.get("archived_documents", []))
+    for document in sorted(archives):
+        if document in required_documents or document.startswith(".agents/"):
+            errors.append(f"cannot archive managed document: {document}")
+        if document not in tracked or not (root / document).is_file():
+            errors.append(f"missing archived document: {document}")
+    # New knowledge must not silently escape validation because an allowlist
+    # was not updated. Historical inputs are explicit policy, never authority.
+    documents |= {p for p in tracked if p.lower().endswith(".md") and p not in archives}
     # Markdown instructions are executable policy inputs, not ordinary prose.
     def policy(path: str) -> bool:
         return path == "AGENTS.md" or path.startswith(".agents/")

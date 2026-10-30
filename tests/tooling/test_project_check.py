@@ -157,3 +157,26 @@ def test_required_knowledge_section_is_checked(repo):
     assert any("missing knowledge section: Flow" in e for e in checker.check(repo, "HEAD")[1])
     (repo / "docs/COMPONENT.md").write_text("[map](INDEX.md)\n## Flow\nInput → result\n")
     assert checker.check(repo, "HEAD")[1] == []
+
+
+def test_new_knowledge_document_links_are_checked(repo):
+    document = repo / "docs/NEW-CONTRACT.md"
+    document.write_text("[authority](missing-schema.py)\n")
+    assert any("NEW-CONTRACT.md: broken/outside" in e
+               for e in checker.check(repo, "HEAD")[1])
+    document.write_text("[authority](../source.py)\n")
+    assert checker.check(repo, "HEAD")[1] == []
+
+
+def test_archive_exemption_is_explicit_and_cannot_hide_component_docs(repo):
+    path = repo / "docs/components.json"
+    registry = json.loads(path.read_text())
+    registry["archived_documents"] = ["docs/OLD.md", "docs/COMPONENT.md"]
+    path.write_text(json.dumps(registry))
+    (repo / "docs/OLD.md").write_text("[historic](missing-design.md)\n")
+    (repo / "docs/COMPONENT.md").write_text("[map](INDEX.md)\nChanged policy\n")
+    assert any("cannot archive managed document" in e
+               for e in checker.check(repo, "HEAD")[1])
+    registry["archived_documents"] = ["docs/OLD.md"]
+    path.write_text(json.dumps(registry))
+    assert checker.check(repo, "HEAD")[1] == []

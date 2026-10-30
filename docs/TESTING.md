@@ -46,3 +46,7 @@ Add reorg, multichain identity and restore/load evidence with the corresponding 
 - Given source, agent-policy or registry changes, the temporary Git repository tests prove omitted docs fail, and ordinary prose edits do not recursively demand more docs.
 - Given deleted/renamed paths, unmapped/ambiguous ownership, invalid base, independently advanced base, missing knowledge sections or broken/outside links, the tooling suite checks rejection.
 - Given CI checkout/base expressions and the persisted reviewer definition, configuration tests check the same revision wiring and parse the agent TOML. A GitHub run still supplies the actual remote execution evidence.
+
+## Knowledge architecture regression evidence
+
+The tooling fixtures also add a previously unknown knowledge document with a broken source link and require rejection, then repair it. Archive classification may exempt historical prose links but cannot hide required component or agent-policy documents. This checks discoverability and linkage, not whether domain prose is true.
