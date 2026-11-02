@@ -1,6 +1,6 @@
 name: Deploy
 
-# Triggered manually (or on push to main once human provides OCI details).
+# Historical deployment draft. Intentionally disabled; see SECURITY.md.
 # Secrets consumed (SPEC §17 credentials map):
 #   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_PRIVATE_KEY — SSH into VM
 #   ARC_MAINNET_RPC_URL — Alchemy mainnet RPC (written into VM .env)
@@ -10,14 +10,15 @@ name: Deploy
 #   vars.ARC_SENTINEL_DOMAIN — public domain for Caddy TLS
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: ["docker-compose.yml", "docker-compose.prod.yml", ".github/workflows/deploy.yml"]
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    if: vars.ARC_SENTINEL_DOMAIN != '' && secrets.DEPLOY_HOST != ''
+    # Disabled for the public portfolio release; requires a separate deployment review.
+    if: ${{ false }}
     steps:
       - uses: actions/checkout@v4
 

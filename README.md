@@ -47,11 +47,12 @@ API documentation: `http://127.0.0.1:8000/docs`. Default code settings target a 
 - Checkpoint coordination across multiple concurrent indexer instances needs additional locking or leasing.
 - The rules loop runs in the API process; it is not a durable workflow engine.
 - OCI-oriented deployment files are included. AWS deployment and cross-chain message processing are not implemented.
-- Existing CI includes image publication and deployment definitions. Review and validate these before enabling deployment; copying this repository is not a deployment verification.
+- CI tests and builds pull requests; image publication is restricted to `main`. The historical deployment workflow is disabled pending a separate deployment review.
+- Read endpoints are public; tenant isolation, rate limiting, and bounded cache eviction are not implemented. Review [the security scope and operational limits](SECURITY.md) before running the prototype.
 
-## Verification recorded on 2026-10-29
+## Verification recorded on 2026-11-01
 
-`./scripts/verify.sh`: Ruff passed; **144 tests passed and 10 integration setup errors** occurred because the local Docker daemon socket was unavailable. Full PostgreSQL integration remains unverified in this run. No live-chain or load benchmark was performed.
+`./scripts/verify.sh`: Ruff passed; **154 tests passed**, including integration tests against disposable PostgreSQL. A `pip-audit` scan of all registry packages in `uv.lock` reported no known vulnerabilities. Git-history credential scanning found only a synthetic example salt; no real committed credential was identified. These checks have limited scope; see [SECURITY.md](SECURITY.md). No live-chain or load benchmark was performed.
 
 ## Next engineering work
 
