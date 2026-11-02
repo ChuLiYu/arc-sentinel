@@ -21,8 +21,8 @@ Dependency fixes include:
   `pytest-asyncio` was updated for compatibility.
 
 The runtime image uses an unprivileged user and a versioned uv build tool.
-Pull requests build the image without publishing it; only pushes to `main` may
-publish an image. The historical deployment workflow is intentionally disabled,
+Pull requests build the image with a read-only token and cannot publish it. A
+separate `main`-push-only job holds package write permission and publishes images. The historical deployment workflow is intentionally disabled,
 including manual dispatch. Re-enabling it requires a separate review of secret
 handling, SSH host verification, configuration, and migration/recovery steps.
 
