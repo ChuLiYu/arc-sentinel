@@ -55,7 +55,7 @@ uv run python -m pytest tests/unit -q
 
 Integration tests start a disposable PostgreSQL container on port 15432 and mock JSON-RPC. They do not need RPC credentials, private keys, a funded wallet, or a real network. The current fixture uses a fixed container name/port: run one integration suite at a time.
 
-For an interactive API and an eventual pilot, use [the runbook](docs/RUNBOOK.md). The runtime image runs as a non-root user. CI runs lint, unit/integration tests and an image build on pull requests; main builds publish a commit-tagged image. Deployment is manual and disabled unless explicitly configured.
+For an interactive API and an eventual pilot, use [the runbook](docs/RUNBOOK.md). The runtime image runs as a non-root user. CI runs lint, unit/integration tests and an image build on pull requests; only `main` builds publish an image, from a separate job. The deployment workflow is disabled pending a separate deployment review (see [SECURITY.md](SECURITY.md)).
 
 ## Scope and known limits
 
@@ -74,6 +74,7 @@ For an interactive API and an eventual pilot, use [the runbook](docs/RUNBOOK.md)
 - [Architecture decisions and failure semantics](docs/ARCHITECTURE.md)
 - [Pilot deployment, recovery and rollback runbook](docs/RUNBOOK.md)
 - [Verification record](docs/VERIFICATION.md)
+- [Security scope and operational limits](SECURITY.md)
 - [Historical specification](docs/SPEC-v1.0-2026-09-16.md) — design context; current code, tests and the roadmap take precedence over historical deployment claims.
 
 The planned TypeScript observer will track cross-chain message lifecycle and operational delays. It will not be presented as a bridge, a DVN, or a proof of message validity. See the roadmap for the event-correlation and workflow design.

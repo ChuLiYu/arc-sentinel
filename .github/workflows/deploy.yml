@@ -1,6 +1,7 @@
 name: Deploy pilot (manual)
 
-# Enable only after the launch gates in docs/ROADMAP.md. No push deployment.
+# Intentionally disabled for the public portfolio release; see SECURITY.md.
+# Re-enable only after the launch gates in docs/ROADMAP.md and a separate deployment review.
 on:
   workflow_dispatch:
     inputs:
@@ -18,7 +19,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: vars.DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main'
+    if: ${{ false }}
     environment: pilot
     runs-on: ubuntu-latest
     env:
