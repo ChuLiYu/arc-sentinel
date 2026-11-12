@@ -7,7 +7,7 @@ Read [the project map](docs/INDEX.md), then only the component documents needed 
 - Follow [the workflow](docs/WORKFLOW.md). A feature/fix includes its acceptance test and affected component documentation in the same PR. Nonbehavioral changes explain why existing tests suffice. Never add meaningless tests or timestamp-only documentation edits.
 - Every owned non-Markdown file change, including tests/configuration, and policy Markdown under AGENTS.md or .agents/ requires its component document to change. Ordinary documentation edits do not recurse. New files must be mapped. CI checks this mechanically; review checks meaning. Do not weaken the checker to make a change pass.
 - Read-only review uses [arc-review](.agents/skills/arc-review/SKILL.md). Implementation uses [arc-change](.agents/skills/arc-change/SKILL.md); load only the needed skill. An independent reviewer is appropriate for indexing, schema, auth or deployment logic; pass the diff and affected map entries, not the whole conversation.
-- Preserve user edits and Private repository visibility. No paid resources, live deployment, external messages or public release follow merely from these instructions.
+- Preserve user edits and the repository's current visibility. No paid resources, live deployment, external messages or public release follow merely from these instructions.
 - No private keys or filled env files in tools/logs/commits. No claims of reorg safety, cross-chain support or production readiness until their roadmap gates pass.
 
 ## Commands and handoff

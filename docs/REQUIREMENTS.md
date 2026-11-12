@@ -15,6 +15,6 @@ The roadmap owns product direction and milestone exit gates. This trace index co
 | API-BASELINE | Prototype authenticated operator API/dashboard | Observed/tested, historical approval unknown; [API](../app/api/README.md), [dashboard](../app/dashboard/README.md) | [API tests](../tests/integration/test_api.py); not evidence of public/multi-tenant readiness |
 | MSG-LIFECYCLE | M2: durable two-chain message observer | Planned; [roadmap M2](ROADMAP.md) | No TypeScript observer, selected pathway or workflow recovery evidence yet |
 | OPS-PILOT | M3: bounded-cost, recoverable testnet operation | Planned; [runbook](RUNBOOK.md) | No live pilot, restore measurement or seven-day observation yet |
-| RELEASE-PUBLIC | M4: reproducible public portfolio release | Planned; [roadmap M4](ROADMAP.md) | Private repository; public exposure requires a separate authorized release |
+| RELEASE-PUBLIC | M4: reproducible public portfolio release | Planned; [roadmap M4](ROADMAP.md) | Source published with the 2026-11-01 security review ([SECURITY.md](../SECURITY.md)); M4 reproducibility gates not yet met |
 
 Changing a rule requires updating its intent/status here only when that status changes, its owning scenario and implementation/tests together. Verification results live in [VERIFICATION.md](VERIFICATION.md); this index does not duplicate run counts. A green test run does not close a milestone with missing scenarios.

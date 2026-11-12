@@ -57,6 +57,10 @@ Integration tests start a disposable PostgreSQL container on port 15432 and mock
 
 For an interactive API and an eventual pilot, use [the runbook](docs/RUNBOOK.md). The runtime image runs as a non-root user. CI runs lint, unit/integration tests and an image build on pull requests; only `main` builds publish an image, from a separate job. The deployment workflow is disabled pending a separate deployment review (see [SECURITY.md](SECURITY.md)).
 
+## Verification recorded on 2026-11-11
+
+On the merged release candidate, `./scripts/verify.sh` passed component mapping/links and Ruff; **249 tests passed**, including integration tests against disposable PostgreSQL with mocked JSON-RPC. They cover row/checkpoint atomicity, competing indexers blocked by the advisory lock, chain ID and block hash/parent lineage checks, and fork detection that latches a recovery-required state reported by `/health`. Gitleaks found no leaks in the new commits or working tree; `pip-audit` of `uv.lock` reported no known vulnerabilities. No live-chain, load or container vulnerability test was performed. Details: [verification record](docs/VERIFICATION.md), [security scope](SECURITY.md).
+
 ## Scope and known limits
 
 - **One chain per database.** Transaction and transfer keys are not chain-scoped; this schema must change before a second chain shares the database.

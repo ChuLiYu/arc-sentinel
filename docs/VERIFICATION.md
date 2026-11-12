@@ -2,6 +2,19 @@
 
 [Project map](INDEX.md)
 
+## Public release candidate — 2026-11-11
+
+Merged the public security release (`52546b4`) into the M1 foundation. Kept its PR/publish job isolation and disabled deployment workflow, and removed private-repository assumptions from docs.
+
+| Check | Result | Boundary |
+| --- | --- | --- |
+| `./scripts/verify.sh` | Mapping/links and Ruff passed; **249 tests passed** | Disposable PostgreSQL and mocked RPC; no live-chain verification |
+| `python3 scripts/project_check.py --base origin/main` | Passed | File-level co-change and local links |
+| `gitleaks` (commits since `origin/main`, working tree) | No leaks found | Pattern-based; earlier history covered by the 2026-11-01 review in [SECURITY.md](../SECURITY.md) |
+| `pip-audit` of exported `uv.lock` | No known vulnerabilities | Python packages only; no container image scan |
+
+Automatic fork rollback, replay and derived-data repair remain unimplemented.
+
 ## Bounded fork diagnosis and recovery state — 2026-10-30
 
 Local follow-on slice on `refactor/flywheel-m1-foundation`, based on `3b2e8cb`. M1 now diagnoses a checkpoint fork within `REORG_MAX_DEPTH` and durably stops ingestion with a visible recovery reason. It preserves raw rows, the journal and checkpoint. This does not implement rollback, replay or derived-data repair.
@@ -37,12 +50,12 @@ At this initial local verification, no live RPC, signing, cloud resources, produ
 
 ## Delivery resumption after directory migration — 2026-10-30
 
-The repository is now at `/Users/liyu/Personal/repos/arc-sentinel`. Resumed the already-reviewed local foundation at `3c5dcd3`; this delivery step changes operational documentation, not indexer behavior.
+The local checkout moved to a new directory. Resumed the already-reviewed local foundation at `3c5dcd3`; this delivery step changes operational documentation, not indexer behavior.
 
 - First canonical verification stopped at the Docker readiness check because the daemon socket was unavailable. Unit/tooling checks independently passed **194 tests**. After ensuring the existing OrbStack engine was ready, `./scripts/verify.sh` passed mapping/links, Ruff and **231 tests with no skips** (35.45 seconds), including disposable PostgreSQL suites.
 - `python3 scripts/project_check.py --base origin/main` passed for the complete candidate diff. These checks work from the new physical directory; no tracked runtime path change was needed.
 - GitHub confirmed repository-scoped protection on `main`: required GitHub Actions checks `test`/`docker`, strict up-to-date checking, administrator enforcement, force pushes disabled and branch deletion disabled. Required human/Code Owner approval remains off for the single-maintainer workflow. The [workflow](WORKFLOW.md) owns the current dated configuration and limitations.
-- The remote repository was confirmed private. Existing [PR #1](https://github.com/ChuLiYu/arc-sentinel/pull/1) is the delivery/remote-CI evidence location; check its head SHA and associated run rather than reusing an older green result. Local test evidence above does not assert a future GitHub Actions result.
+- At that time the remote repository was private and PR #1 was the delivery/remote-CI evidence location; the repository was later published (see [SECURITY.md](../SECURITY.md)). Check a PR's head SHA and associated run rather than reusing an older green result. Local test evidence above does not assert a future GitHub Actions result.
 
 No live-chain request, signing, cloud deployment or production data migration was performed. M1 remains incomplete as listed in the [requirement trace](REQUIREMENTS.md); this delivery does not imply automatic fork repair or wallet-ledger support.
 
