@@ -1,4 +1,4 @@
-"""SQLAlchemy 2.0 ORM models matching SPEC §7 (all 9 tables).
+"""SQLAlchemy target schema; upgrade authority is the ordered Alembic revisions.
 
 Financial ground rules (SPEC §7):
   * Every amount column is ``NUMERIC`` — never ``float``.
@@ -197,9 +197,26 @@ class IndexerState(Base):
 
     chain_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     last_indexed_block: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    recovery_reason: Mapped[str | None] = mapped_column(Text)
+    recovery_ancestor_block: Mapped[int | None] = mapped_column(BigInteger)
+    recovery_detected_at: Mapped[dt.datetime | None] = mapped_column(TIMESTAMPTZ)
     updated_at: Mapped[dt.datetime] = mapped_column(
         TIMESTAMPTZ, nullable=False, server_default=text("now()")
     )
+
+
+class IndexedBlock(Base):
+    """Observed lineage, including explicit anchors whose history was skipped."""
+
+    __tablename__ = "indexed_blocks"
+
+    chain_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    block_number: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    block_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    parent_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    block_time: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+    observed_provider: Mapped[str] = mapped_column(Text, nullable=False)
+    is_anchor: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
 
 
 # ---------------------------------------------------------------------------

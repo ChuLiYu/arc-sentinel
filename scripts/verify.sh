@@ -7,10 +7,14 @@ cd "$(dirname "$0")/.."
 PY=.venv/bin/python
 [ -x "$PY" ] || { echo "no .venv — run: uv sync"; exit 1; }
 
+echo "==> project documentation"
+"$PY" scripts/project_check.py
+
 echo "==> ruff"
-"$PY" -m ruff check app tests
+"$PY" -m ruff check app tests scripts/project_check.py
 
 echo "==> pytest (all suites; integration containers start as needed)"
+docker info > /dev/null
 "$PY" -m pytest tests/ -q
 
 echo "==> verify OK"

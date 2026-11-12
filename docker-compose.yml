@@ -1,59 +1,40 @@
-# Arc Sentinel deployment (SPEC §11) — OCI Always Free single VM.
-# Four containers: postgres, indexer, api, caddy (TLS terminator).
-# Human-gated values come from the environment (see .env.example).
-
+# Local development only. See docs/RUNBOOK.md for migration and key issuance.
 services:
   postgres:
     image: postgres:16-alpine
-    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-sentinel}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB:-sentinel}
+    ports:
+      - "127.0.0.1:15433:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata_local:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sentinel} -d ${POSTGRES_DB:-sentinel}"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
-
-  indexer:
-    image: ghcr.io/${GITHUB_REPOSITORY:-arc-sentinel/arc-sentinel}:latest
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    command: ["uv", "run", "python", "-m", "app.indexer.worker"]
-    environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-sentinel}
-      RPC_URL: ${RPC_URL:?set RPC_URL in .env}
-      CHAIN_ID: ${CHAIN_ID:-5042002}
-
+      retries: 10
   api:
-    image: ghcr.io/${GITHUB_REPOSITORY:-arc-sentinel/arc-sentinel}:latest
-    restart: unless-stopped
+    build: .
+    image: arc-sentinel:local
+    env_file: .env.local
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-sentinel}
+    ports:
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
+  indexer:
+    build: .
+    image: arc-sentinel:local
+    env_file: .env.local
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-sentinel}
-      API_KEY_HASH: ${API_KEY_HASH:-}
-
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
+    command: ["python", "-m", "app.indexer.worker"]
     depends_on:
-      - api
-
+      postgres:
+        condition: service_healthy
 volumes:
-  pgdata:
-  caddy_data:
-  caddy_config:
+  pgdata_local:

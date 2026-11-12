@@ -7,13 +7,24 @@ breakpoint and the ``tx_hash`` UNIQUE constraints make re-indexing idempotent.
 
 from __future__ import annotations
 
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.db.models import IndexerState
 
-__all__ = ["get_last_indexed_block", "set_last_indexed_block"]
+__all__ = ["get_last_indexed_block", "set_last_indexed_block", "try_indexer_lock"]
+
+
+def try_indexer_lock(session: Session, chain_id: int) -> bool:
+    """Nonblocking, transaction-scoped single-writer lock per chain/database.
+
+    PostgreSQL releases it on commit, rollback or connection loss. All writers
+    must use this protocol; it does not protect against manual checkpoint edits.
+    The upper bits namespace these locks away from other application locks.
+    """
+    key = (0x415243 << 32) | chain_id
+    return bool(session.scalar(text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": key}))
 
 
 def get_last_indexed_block(session: Session, chain_id: int) -> int | None:

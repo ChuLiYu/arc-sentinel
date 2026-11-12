@@ -149,6 +149,7 @@ class RpcClient:
 
         #: True while the primary URL is the active provider.
         self._active_is_primary = True
+        self._provider_generation = 0
         #: Consecutive successful calls served by the fallback (drives probing).
         self._fallback_success_streak = 0
         #: Set once the fallback is healthy long enough to probe the primary.
@@ -196,6 +197,11 @@ class RpcClient:
         """True once the client failed over to the backup provider."""
         return not self._active_is_primary
 
+    @property
+    def provider_generation(self) -> int:
+        """Monotonic selection epoch; a batch spanning a switch must retry."""
+        return self._provider_generation
+
     # ------------------------------------------------------------------
     # Backoff schedule (kept as a property so tests can assert the policy)
     # ------------------------------------------------------------------
@@ -226,6 +232,10 @@ class RpcClient:
     # ------------------------------------------------------------------
     # Public RPC calls
     # ------------------------------------------------------------------
+    async def eth_chain_id(self) -> int:
+        """Return the provider's chain ID, including after failover."""
+        return _to_int(await self._call("eth_chainId", []))
+
     async def eth_block_number(self) -> int:
         """Return the current head block number as an int."""
         result = await self._call("eth_blockNumber", [])
@@ -268,7 +278,9 @@ class RpcClient:
         if topics:
             params["topics"] = list(topics)
         result = await self._call("eth_getLogs", [params])
-        return list(result or [])
+        if not isinstance(result, list) or any(not isinstance(log, dict) for log in result):
+            raise RpcTransportError("eth_getLogs: expected an array of log objects")
+        return result
 
     async def eth_call(self, *, to: str, data: str, block: str = "latest") -> str:
         """Execute an eth_call (read-only) against the given contract."""
@@ -377,6 +389,7 @@ class RpcClient:
                     self._fallback_url,
                 )
                 self._active_is_primary = False
+                self._provider_generation += 1
                 self._fallback_success_streak = 0
                 self.consecutive_failures = 0
                 # Remember *when* we left the primary and how badly it was
@@ -447,6 +460,7 @@ class RpcClient:
             if response.status_code == 200 and "error" not in response.json():
                 logger.info("RPC primary recovered — switching back to %s", self._url)
                 self._active_is_primary = True
+                self._provider_generation += 1
                 self._fallback_success_streak = 0
                 self._fallback_since = None
                 self._fallback_rate_limit_strikes = 0

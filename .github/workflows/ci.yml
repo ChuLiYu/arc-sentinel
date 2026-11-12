@@ -8,20 +8,39 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: astral-sh/setup-uv@v6
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Check component docs and links
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 scripts/project_check.py --base "$BASE_SHA"
       - run: uv sync --frozen
       - name: Lint
-        run: uv run ruff check app tests
+        run: uv run ruff check app tests scripts/project_check.py
       - name: Tests (unit + integration incl. throwaway Postgres)
-        run: uv run python -m pytest tests/ -q
+        run: |
+          docker info > /dev/null
+          uv run python -m pytest tests/ -q --junitxml=/tmp/test-results.xml
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-failure-report
+          path: /tmp/test-results.xml
+          retention-days: 7
 
   docker:
     needs: test
@@ -30,6 +49,9 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:

@@ -9,6 +9,9 @@ dist/
 docs/
 tests/
 .env*
+.serena/
+.coverage*
+pgdata/
 *.md
 .gitignore
 README.md

@@ -36,8 +36,10 @@ handling, SSH host verification, configuration, and migration/recovery steps.
   trusted local environment until resource limits are designed and verified.
 - RPC URLs may include provider credentials and may appear in error logs. Treat
   logs as sensitive; review/redact them before sharing.
-- Chain reorganization recovery and coordination between multiple indexers are
-  not implemented on this release's `main` branch. See README for correctness limits.
+- A PostgreSQL advisory lock serializes competing indexers per chain/database,
+  and detected forks latch a persistent recovery-required state exposed by
+  `/health`. Automatic chain reorganization rollback, replay and derived-data
+  repair are not implemented. See README for correctness limits.
 
 Run locally with disposable credentials and synthetic data. No production
 service deployment, external penetration test, live-chain test, load benchmark,

@@ -1,65 +1,84 @@
 # Arc Sentinel
 
-A read-only EVM wallet activity indexer and monitoring API, built with Python 3.12, FastAPI, PostgreSQL, SQLAlchemy, and HTTP JSON-RPC. This repository is a backend portfolio prototype; the source alone does not establish production usage, throughput, or availability.
+**A read-only wallet activity monitor focused on recoverable EVM event indexing.**
 
-## Implemented behavior
+Arc Sentinel indexes registered wallets' transactions and USDC transfers into PostgreSQL, exposes a FastAPI ledger and dashboard, and evaluates budget, recipient and anomaly rules. It is a backend engineering portfolio project moving toward an operator-run testnet pilot.
 
-- Poll blocks and USDC Transfer logs for registered wallets, with a configurable confirmation buffer and bounded catch-up batches.
-- Insert transactions and transfers with PostgreSQL conflict handling; commit the indexing checkpoint with the indexed rows.
-- Retry RPC requests with backoff, treat throttling separately, and support a fallback provider.
-- Evaluate budget, recipient, and anomaly rules and expose agent, transaction, alert, and statistics endpoints.
-- Authenticate write endpoints using hashed API keys. Provide a dashboard, migrations, backup scripts, and container deployment definitions.
+**Current maturity:** tested local prototype. No live-service availability, benchmark, mainnet readiness, or cross-chain support is claimed. The next release gates are in [the roadmap](docs/ROADMAP.md).
 
-```text
-EVM JSON-RPC -> indexer -> PostgreSQL -> FastAPI -> dashboard/API clients
-                              ^           |
-                              +-- rules --+
+## Agent and contributor navigation
+
+Start with [AGENTS.md](AGENTS.md) and [the project map](docs/INDEX.md). Code, tests and component documents ship together; CI enforces ownership, local links and document co-change. See [the workflow](docs/WORKFLOW.md).
+
+## Why this project
+
+An event monitor is useful only if it can explain missing data, duplicate delivery and recovery after failure. This repository makes those contracts visible in code and PostgreSQL integration tests, rather than relying on a successful RPC happy path.
+
+```mermaid
+flowchart LR
+    RPC[EVM JSON-RPC] --> W[Python indexer]
+    W -->|one transaction: rows + checkpoint| DB[(PostgreSQL)]
+    DB --> API[FastAPI ledger and dashboard]
+    DB --> R[Rules loop]
+    R --> DB
+    TS[Planned: TypeScript cross-chain observer] -.-> DB
 ```
 
-## Local development
+Python 3.12 · FastAPI · SQLAlchemy · PostgreSQL · Alembic · HTTP JSON-RPC · Docker
 
-Prerequisites: Python 3.12, uv, and a running Docker daemon for PostgreSQL integration tests.
+## Implemented reliability contracts
+
+| Concern | Behavior | Evidence |
+| --- | --- | --- |
+| Interrupted batch | Rows and checkpoint commit together; an exception rolls both back | `test_indexer_recovery_pg.py` |
+| Incomplete provider data | Missing/wrong blocks, missing receipts, invalid receipt status, malformed/removed token logs and non-array log responses fail the batch | Worker and RPC unit tests; PostgreSQL retry tests |
+| Replay | Database uniqueness deduplicates transactions and transfer identities | `test_worker_pg.py` |
+| Competing indexers | Nonblocking PostgreSQL transaction advisory lock, scoped per chain/database | Real competing database sessions in recovery tests |
+| Backfill | Optional inclusive `START_BLOCK` for a new checkpoint; existing checkpoint wins | Genesis, historical and future-start tests |
+| Wrong network | `eth_chainId` checked at the beginning of every cycle | Wrong-chain integration test |
+| Provider failure | Bounded concurrent fetches, RPC retry/backoff and fallback provider support | `test_rpc_client.py` |
+
+A failed decode intentionally stops progress. Operators repair the cause and replay; there is no silent quarantine/skip policy. The advisory lock covers the whole poll transaction, including RPC waits. It is simple and correctness-oriented, with throughput and connection-pool tradeoffs.
+
+## Verify locally without chain credentials
+
+Prerequisites: Python 3.12, [uv](https://docs.astral.sh/uv/), and Docker running for the PostgreSQL tests.
 
 ```sh
 uv sync --frozen
-uv run ruff check app tests
-uv run python -m pytest tests/unit -q
-# Starts a disposable PostgreSQL container on port 15432:
 ./scripts/verify.sh
+# Focused failure/recovery demonstration, also included in the full suite:
+uv run python -m pytest tests/integration/test_indexer_recovery_pg.py -v
+# DB-free development:
+uv run python -m pytest tests/unit -q
 ```
 
-For an interactive API, create a local PostgreSQL database and configure `DATABASE_URL` in an untracked `.env`, then:
+Integration tests start a disposable PostgreSQL container on port 15432 and mock JSON-RPC. They do not need RPC credentials, private keys, a funded wallet, or a real network. The current fixture uses a fixed container name/port: run one integration suite at a time.
 
-```sh
-uv run alembic upgrade head
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
-# In another terminal, after configuring a matching RPC URL and chain:
-uv run python -m app.indexer.worker
-```
+For an interactive API and an eventual pilot, use [the runbook](docs/RUNBOOK.md). The runtime image runs as a non-root user. CI runs lint, unit/integration tests and an image build on pull requests; only `main` builds publish an image, from a separate job. The deployment workflow is disabled pending a separate deployment review (see [SECURITY.md](SECURITY.md)).
 
-API documentation: `http://127.0.0.1:8000/docs`. Default code settings target a test network. Historical network and provider claims in `.env.example` and the specification require independent verification before use; configure the RPC URL, chain ID, and token address for the same network. Do not copy real credentials into tracked files.
+## Verification recorded on 2026-11-11
 
-## Guarantees and limitations
+On the merged release candidate, `./scripts/verify.sh` passed component mapping/links and Ruff; **249 tests passed**, including integration tests against disposable PostgreSQL with mocked JSON-RPC. They cover row/checkpoint atomicity, competing indexers blocked by the advisory lock, chain ID and block hash/parent lineage checks, and fork detection that latches a recovery-required state reported by `/health`. Gitleaks found no leaks in the new commits or working tree; `pip-audit` of `uv.lock` reported no known vulnerabilities. No live-chain, load or container vulnerability test was performed. Details: [verification record](docs/VERIFICATION.md), [security scope](SECURITY.md).
 
-- Database uniqueness prevents duplicate stored rows; this is not a claim of end-to-end exactly-once processing.
-- A confirmation buffer is implemented, but canonical block-hash tracking and chain reorganization rollback are not implemented.
-- A new indexer starts at the current safe head; automatic full-history backfill is not provided.
-- Checkpoint coordination across multiple concurrent indexer instances needs additional locking or leasing.
-- The rules loop runs in the API process; it is not a durable workflow engine.
-- OCI-oriented deployment files are included. AWS deployment and cross-chain message processing are not implemented.
-- CI tests and builds pull requests; image publication is restricted to `main`. The historical deployment workflow is disabled pending a separate deployment review.
-- Read endpoints are public; tenant isolation, rate limiting, and bounded cache eviction are not implemented. Review [the security scope and operational limits](SECURITY.md) before running the prototype.
+## Scope and known limits
 
-## Verification recorded on 2026-11-01
+- **One chain per database.** Transaction and transfer keys are not chain-scoped; this schema must change before a second chain shares the database.
+- **No automatic chain reorganization recovery yet.** A confirmation buffer is not finality. Hash/parent/member checks stop inconsistent batches; forked checkpoints trigger bounded ancestor diagnosis and a persistent recovery-required state exposed by `/health`. Mid-cycle provider changes force retry. Rollback, replay and derived-data repair remain launch blockers; stored reads can still contain pre-repair branch data.
+- New wallets are observed prospectively unless an explicit rescan is performed. A new database defaults to anchoring at the current safe head when `START_BLOCK` is unset.
+- One transaction currently maps to one agent; transfers between two monitored wallets need a separate wallet-ledger projection before multi-user rollout.
+- The rules loop runs inside the API process; it is neither a durable workflow engine nor safe evidence of exactly-once alerts across API replicas.
+- Read routes expose wallet activity and labels. Authentication/tenant boundaries, rate limits and data-retention policy must be decided before accepting users' data.
+- Gas conversion currently assumes Arc's native USDC accounting (18 native decimals versus 6 ERC-20 decimals). Do not apply `gas_fee_usdc` to an ETH-gas chain without a separate native-currency model and valuation policy. [Arc's explanation](https://www.arc.io/blog/building-with-usdc-on-arc-one-token-two-interfaces).
+- No AWS infrastructure, TypeScript service, durable cross-chain workflow or live-chain/load benchmark is implemented in this milestone.
 
-`./scripts/verify.sh`: Ruff passed; **154 tests passed**, including integration tests against disposable PostgreSQL. A `pip-audit` scan of all registry packages in `uv.lock` reported no known vulnerabilities. Git-history credential scanning found only a synthetic example salt; no real committed credential was identified. These checks have limited scope; see [SECURITY.md](SECURITY.md). No live-chain or load benchmark was performed.
+## Engineering and application material
 
-## Next engineering work
+- [Roadmap and measurable launch gates](docs/ROADMAP.md)
+- [Architecture decisions and failure semantics](docs/ARCHITECTURE.md)
+- [Pilot deployment, recovery and rollback runbook](docs/RUNBOOK.md)
+- [Verification record](docs/VERIFICATION.md)
+- [Security scope and operational limits](SECURITY.md)
+- [Historical specification](docs/SPEC-v1.0-2026-09-16.md) — design context; current code, tests and the roadmap take precedence over historical deployment claims.
 
-1. Persist block hashes and parent hashes; test shallow/deep reorg recovery, replay, and interrupted commits.
-2. Add a single-writer lease and tests for competing workers.
-3. Separate rule execution into a recoverable worker; add retry budgets, deduplication, and operational metrics.
-4. Add a TypeScript cross-chain message observer with durable workflow execution, mocked failure scenarios, and a testnet demonstration.
-5. Add an AWS deployment with measured cost, lag, recovery time, and reproducible benchmark instructions.
-
-See [the existing specification](docs/SPEC-v1.0-2026-09-16.md) for design context. Planned features and historical notes there are not evidence of deployed behavior.
+The planned TypeScript observer will track cross-chain message lifecycle and operational delays. It will not be presented as a bridge, a DVN, or a proof of message validity. See the roadmap for the event-correlation and workflow design.

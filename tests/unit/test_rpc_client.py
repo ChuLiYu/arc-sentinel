@@ -316,11 +316,13 @@ async def test_probe_primary_and_switch_back_after_recovery(url: str):
     try:
         assert await c.eth_block_number() == 300
         assert c.using_fallback is True  # failover happened, fallback served it
+        assert c.provider_generation == 1
 
         # Second call probes the (now recovered) primary and switches back.
         assert await c.eth_block_number() == 300
         assert c.using_fallback is False
         assert c.active_url == url
+        assert c.provider_generation == 2  # returning to primary is a new epoch too
     finally:
         await c.close()
 
@@ -559,3 +561,23 @@ async def test_fallback_stay_extends_after_rate_limit_storm(url: str):
         assert c.active_url == url
     finally:
         await c.close()
+
+
+@pytest.mark.parametrize("result", [None, {}, [None], ["invalid"]])
+@respx.mock
+async def test_get_logs_rejects_incomplete_provider_response(url, result):
+    respx.post(url).mock(return_value=httpx.Response(
+        200, json={"jsonrpc": "2.0", "id": 1, "result": result}
+    ))
+    async with RpcClient(url=url, max_retries=0) as client:
+        with pytest.raises(RpcTransportError, match="array of log objects"):
+            await client.eth_get_logs(from_block=1, to_block=2)
+
+
+@respx.mock
+async def test_chain_id_uses_rpc_response(url):
+    respx.post(url).mock(return_value=httpx.Response(
+        200, json={"jsonrpc": "2.0", "id": 1, "result": "0x89"}
+    ))
+    async with RpcClient(url=url, max_retries=0) as client:
+        assert await client.eth_chain_id() == 137
